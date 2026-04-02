@@ -40,6 +40,22 @@ function CustomTooltip({ active, payload }) {
 }
 
 export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centroidMedian, onPageClick }) {
+  const hasCentroid = pages.some(p => p.centroid_similarity != null)
+
+  if (!hasCentroid) {
+    return (
+      <div className="bg-slate-800 rounded-xl p-6">
+        <h3 className="font-semibold mb-4">Semantic Quadrants</h3>
+        <div className="flex items-center justify-center h-64 text-slate-400">
+          <div className="text-center">
+            <p className="mb-2">Centroid data not available.</p>
+            <p className="text-sm text-slate-500">Re-run the analysis to compute dual-axis scores.</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const data = pages
     .filter(p => !p.is_structural && p.centroid_similarity != null)
     .map(p => {
