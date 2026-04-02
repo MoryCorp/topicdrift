@@ -96,6 +96,7 @@ def list_projects():
     for r in rows:
         d = dict(r)
         d.pop("anchor_embedding", None)
+        d.pop("centroid_embedding", None)
         d["dilution_ratio"] = round(d["off_topic_count"] / d["analyzed_count"], 3) if d["analyzed_count"] else 0
         results.append(d)
     return results
@@ -110,6 +111,7 @@ def get_project(project_id: int):
         raise HTTPException(404, "Project not found")
     result = dict(row)
     result.pop("anchor_embedding", None)
+    result.pop("centroid_embedding", None)
     stats = conn.execute("""
         SELECT COUNT(*) as total_pages,
                AVG(similarity_score) as avg_score
@@ -162,6 +164,7 @@ def patch_project(project_id: int, data: ProjectPatch):
 
     result = dict(conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
     result.pop("anchor_embedding", None)
+    result.pop("centroid_embedding", None)
     conn.close()
     return result
 
