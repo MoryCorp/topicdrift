@@ -110,7 +110,7 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
   const ghost = splitByQuadrant(noClicks)
 
   // ZAxis range = area values; Recharts maps _size linearly within this range
-  const zRange = gscAvailable ? [50, 17700] : [616, 616]
+  const zRange = gscAvailable ? [300, 8000] : [616, 616]
 
   return (
     <div className="bg-slate-800 rounded-xl p-6">
