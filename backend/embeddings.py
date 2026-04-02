@@ -2,6 +2,8 @@ import json
 import logging
 import numpy as np
 from openai import OpenAI
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
 
 from config import settings
 from database import get_connection
@@ -30,7 +32,7 @@ def get_embeddings_batch(client: OpenAI, texts: list[str]) -> list[list[float]]:
     return [item.embedding for item in response.data]
 
 
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+def cosine_similarity_np(a: np.ndarray, b: np.ndarray) -> float:
     dot = np.dot(a, b)
     norm_a = np.linalg.norm(a)
     norm_b = np.linalg.norm(b)
@@ -64,76 +66,79 @@ def analyze_project(project_id: int):
         if not keywords:
             raise ValueError("No anchor keywords defined")
 
-        client = get_client()
-
-        # Step 1: Compute anchor embedding
-        logger.info(f"Computing anchor embedding from {len(keywords)} keywords")
-        keyword_embeddings = get_embeddings_batch(client, keywords)
-        anchor_vec = np.mean([np.array(e) for e in keyword_embeddings], axis=0)
-        anchor_blob = serialize_embedding(anchor_vec)
-
-        cursor.execute(
-            "UPDATE projects SET anchor_embedding=?, updated_at=datetime('now') WHERE id=?",
-            (anchor_blob, project_id)
-        )
-        conn.commit()
-
-        # Step 2: Compute page embeddings
+        # Get all pages with content
         cursor.execute(
             "SELECT id, content_text FROM pages WHERE project_id=? AND word_count >= 50 AND content_text IS NOT NULL",
             (project_id,)
         )
         pages = cursor.fetchall()
-        logger.info(f"Computing embeddings for {len(pages)} pages")
-
-        all_page_vecs = []  # (page_id, numpy_vec)
-        batch_ids = []
-        batch_texts = []
-
-        for page in pages:
-            batch_ids.append(page["id"])
-            batch_texts.append(truncate_text(page["content_text"]))
-
-            if len(batch_texts) >= BATCH_SIZE:
-                vecs = _embed_batch(client, batch_ids, batch_texts)
-                all_page_vecs.extend(vecs)
-                # Store embeddings immediately
-                for pid, vec in vecs:
-                    cursor.execute("UPDATE pages SET embedding=? WHERE id=?", (serialize_embedding(vec), pid))
-                conn.commit()
-                batch_ids = []
-                batch_texts = []
-
-        if batch_texts:
-            vecs = _embed_batch(client, batch_ids, batch_texts)
-            all_page_vecs.extend(vecs)
-            for pid, vec in vecs:
-                cursor.execute("UPDATE pages SET embedding=? WHERE id=?", (serialize_embedding(vec), pid))
-            conn.commit()
-
-        if not all_page_vecs:
+        if not pages:
             raise ValueError("No pages with content to analyze")
 
-        # Step 3: Compute centroid (mean of ALL page embeddings)
-        logger.info("Computing site centroid")
-        centroid_vec = np.mean([vec for _, vec in all_page_vecs], axis=0)
-        centroid_blob = serialize_embedding(centroid_vec)
+        page_ids = [p["id"] for p in pages]
+        page_texts = [p["content_text"] for p in pages]
 
+        logger.info(f"Analyzing {len(pages)} pages for project {project_id}")
+
+        # ===== STEP 1: TF-IDF similarity (axis X) =====
+        logger.info("Computing TF-IDF similarity scores")
+        anchor_document = " ".join(keywords)
+        corpus = page_texts + [anchor_document]
+
+        vectorizer = TfidfVectorizer(
+            max_features=10000,
+            min_df=2,
+            max_df=0.95,
+            ngram_range=(1, 2),
+            sublinear_tf=True,
+        )
+        tfidf_matrix = vectorizer.fit_transform(corpus)
+        anchor_vector = tfidf_matrix[-1]
+
+        for i, page_id in enumerate(page_ids):
+            sim = sklearn_cosine(tfidf_matrix[i], anchor_vector)[0][0]
+            cursor.execute("UPDATE pages SET similarity_score=? WHERE id=?", (float(sim), page_id))
+        conn.commit()
+
+        # ===== STEP 2: Embeddings + centroid (axis Y) =====
+        logger.info("Computing embeddings for centroid")
+        client = get_client()
+
+        # Also compute anchor embedding (stored for future use)
+        keyword_embeddings = get_embeddings_batch(client, keywords)
+        anchor_vec = np.mean([np.array(e) for e in keyword_embeddings], axis=0)
         cursor.execute(
-            "UPDATE projects SET centroid_embedding=?, updated_at=datetime('now') WHERE id=?",
-            (centroid_blob, project_id)
+            "UPDATE projects SET anchor_embedding=?, updated_at=datetime('now') WHERE id=?",
+            (serialize_embedding(anchor_vec), project_id)
         )
         conn.commit()
 
-        # Step 4: Compute both similarity scores for each page
-        logger.info("Computing dual similarity scores")
+        # Page embeddings in batches
+        all_page_vecs = []
+        for batch_start in range(0, len(page_ids), BATCH_SIZE):
+            batch_ids = page_ids[batch_start:batch_start + BATCH_SIZE]
+            batch_texts = [truncate_text(t) for t in page_texts[batch_start:batch_start + BATCH_SIZE]]
+            embeddings = get_embeddings_batch(client, batch_texts)
+            for pid, emb in zip(batch_ids, embeddings):
+                vec = np.array(emb)
+                all_page_vecs.append((pid, vec))
+                cursor.execute("UPDATE pages SET embedding=? WHERE id=?", (serialize_embedding(vec), pid))
+            conn.commit()
+            logger.info(f"Embedded {min(batch_start + BATCH_SIZE, len(page_ids))}/{len(page_ids)} pages")
+
+        # Centroid = mean of all page embeddings
+        centroid_vec = np.mean([vec for _, vec in all_page_vecs], axis=0)
+        cursor.execute(
+            "UPDATE projects SET centroid_embedding=?, updated_at=datetime('now') WHERE id=?",
+            (serialize_embedding(centroid_vec), project_id)
+        )
+        conn.commit()
+
+        # Centroid similarity for each page
+        logger.info("Computing centroid similarity scores")
         for page_id, vec in all_page_vecs:
-            sim_anchor = cosine_similarity(vec, anchor_vec)
-            sim_centroid = cosine_similarity(vec, centroid_vec)
-            cursor.execute(
-                "UPDATE pages SET similarity_score=?, centroid_similarity=? WHERE id=?",
-                (sim_anchor, sim_centroid, page_id)
-            )
+            sim = cosine_similarity_np(vec, centroid_vec)
+            cursor.execute("UPDATE pages SET centroid_similarity=? WHERE id=?", (sim, page_id))
         conn.commit()
 
         cursor.execute("UPDATE projects SET status='done', updated_at=datetime('now') WHERE id=?", (project_id,))
@@ -150,8 +155,3 @@ def analyze_project(project_id: int):
         raise
     finally:
         conn.close()
-
-
-def _embed_batch(client, ids, texts):
-    embeddings = get_embeddings_batch(client, texts)
-    return [(pid, np.array(emb)) for pid, emb in zip(ids, embeddings)]

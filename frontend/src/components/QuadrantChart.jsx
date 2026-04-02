@@ -29,8 +29,8 @@ function CustomTooltip({ active, payload }) {
       <p className="font-medium text-slate-100 truncate">{d.title || d.path}</p>
       <p className="text-slate-400 text-xs truncate mb-2">{d.path}</p>
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-        <span>Anchor: <strong style={{ color: QUADRANT_COLORS[d._quadrant] }}>{(d.similarity_score * 100).toFixed(0)}%</strong></span>
-        <span>Centroid: <strong>{((d.centroid_similarity || 0) * 100).toFixed(0)}%</strong></span>
+        <span>Anchor: <strong style={{ color: QUADRANT_COLORS[d._quadrant] }}>{(d._anchor * 100).toFixed(0)}%</strong></span>
+        <span>Centroid: <strong>{(d._centroid * 100).toFixed(0)}%</strong></span>
         {d.gsc_clicks > 0 && <span>Clicks: <strong>{d.gsc_clicks.toLocaleString()}</strong></span>}
         <span>Words: <strong>{d.word_count?.toLocaleString()}</strong></span>
       </div>
@@ -40,7 +40,7 @@ function CustomTooltip({ active, payload }) {
 }
 
 export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centroidMedian, onPageClick }) {
-  const hasCentroid = pages.some(p => p.centroid_similarity != null)
+  const hasCentroid = pages.some(p => p.centroid_similarity_norm != null)
 
   if (!hasCentroid) {
     return (
@@ -57,11 +57,13 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
   }
 
   const data = pages
-    .filter(p => !p.is_structural && p.centroid_similarity != null)
+    .filter(p => !p.is_structural && p.centroid_similarity_norm != null)
     .map(p => {
-      const q = getQuadrant(p.similarity_score, p.centroid_similarity, thresholdOff, centroidMedian)
+      const q = getQuadrant(p.similarity_score_norm, p.centroid_similarity_norm, thresholdOff, centroidMedian)
       return {
         ...p,
+        _anchor: p.similarity_score_norm,
+        _centroid: p.centroid_similarity_norm,
         _quadrant: q,
         _color: QUADRANT_COLORS[q],
         _size: gscAvailable ? Math.max(p.gsc_clicks || 1, 1) : Math.max(p.word_count || 100, 100),
@@ -89,12 +91,12 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
         <ScatterChart margin={{ top: 30, right: 30, bottom: 30, left: 20 }}
           onClick={(e) => { if (e?.activePayload?.[0]?.payload?.id) onPageClick?.(e.activePayload[0].payload.id) }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-          <XAxis dataKey="similarity_score" type="number" domain={[0, 1]} name="Anchor"
+          <XAxis dataKey="_anchor" type="number" domain={[0, 1]} name="Anchor"
             tick={{ fill: '#94a3b8', fontSize: 11 }}
             tickFormatter={v => `${(v * 100).toFixed(0)}%`}>
             <Label value="Proximity to target topic \u2192" position="bottom" offset={10} fill="#94a3b8" fontSize={12} />
           </XAxis>
-          <YAxis dataKey="centroid_similarity" type="number" domain={[0, 1]} name="Centroid"
+          <YAxis dataKey="_centroid" type="number" domain={[0, 1]} name="Centroid"
             tick={{ fill: '#94a3b8', fontSize: 11 }}
             tickFormatter={v => `${(v * 100).toFixed(0)}%`}>
             <Label value="\u2191 Proximity to site centroid" angle={-90} position="insideLeft" offset={5} fill="#94a3b8" fontSize={12} />

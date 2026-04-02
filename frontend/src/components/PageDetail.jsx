@@ -53,14 +53,14 @@ export default function PageDetail({ projectId, pageId, thresholdOff, thresholdO
             {/* Dual scores */}
             <div className="flex gap-4">
               <div className="flex-1 text-center bg-slate-800 rounded-lg p-4">
-                <div className="text-3xl font-bold" style={{ color: getColor(data.similarity_score, thresholdOff, thresholdOn) }}>
-                  {(data.similarity_score * 100).toFixed(0)}%
+                <div className="text-3xl font-bold" style={{ color: getColor(data.similarity_score_norm || 0, thresholdOff, thresholdOn) }}>
+                  {((data.similarity_score_norm || 0) * 100).toFixed(0)}%
                 </div>
                 <div className="text-slate-500 text-xs mt-1">Anchor score</div>
               </div>
               <div className="flex-1 text-center bg-slate-800 rounded-lg p-4">
                 <div className="text-3xl font-bold text-slate-200">
-                  {data.centroid_similarity != null ? `${(data.centroid_similarity * 100).toFixed(0)}%` : '-'}
+                  {data.centroid_similarity_norm != null ? `${(data.centroid_similarity_norm * 100).toFixed(0)}%` : '-'}
                 </div>
                 <div className="text-slate-500 text-xs mt-1">Centroid score</div>
               </div>

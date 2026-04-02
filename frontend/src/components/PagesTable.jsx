@@ -19,15 +19,15 @@ const TYPE_STYLES = {
   structural: 'bg-slate-600/30 text-slate-400',
 }
 
-function getQuadrant(anchor, centroid, tOff, centroidMedian) {
-  if (anchor >= tOff && centroid >= centroidMedian) return 'top_right'
-  if (anchor < tOff && centroid >= centroidMedian) return 'top_left'
-  if (anchor >= tOff && centroid < centroidMedian) return 'bottom_right'
+function getQuadrant(anchorNorm, centroidNorm, tOff, centroidMedian) {
+  if (anchorNorm >= tOff && centroidNorm >= centroidMedian) return 'top_right'
+  if (anchorNorm < tOff && centroidNorm >= centroidMedian) return 'top_left'
+  if (anchorNorm >= tOff && centroidNorm < centroidMedian) return 'bottom_right'
   return 'bottom_left'
 }
 
 export default function PagesTable({ pages, gscAvailable, thresholdOff, thresholdOn, centroidMedian, onPageClick }) {
-  const [sortKey, setSortKey] = useState('similarity_score')
+  const [sortKey, setSortKey] = useState('similarity_score_norm')
   const [sortAsc, setSortAsc] = useState(true)
   const [search, setSearch] = useState('')
   const [quadrantFilter, setQuadrantFilter] = useState('all')
@@ -41,7 +41,7 @@ export default function PagesTable({ pages, gscAvailable, thresholdOff, threshol
     if (quadrantFilter !== 'all') {
       result = result.filter(p => {
         if (p.page_type === 'structural') return false
-        return getQuadrant(p.similarity_score, p.centroid_similarity || 0, thresholdOff, centroidMedian) === quadrantFilter
+        return getQuadrant(p.similarity_score_norm || 0, p.centroid_similarity_norm || 0, thresholdOff, centroidMedian) === quadrantFilter
       })
     }
 
@@ -102,11 +102,11 @@ export default function PagesTable({ pages, gscAvailable, thresholdOff, threshol
           <thead>
             <tr className="border-b border-slate-700 text-slate-400 text-left">
               <th className="pb-3 pr-4 font-medium">URL / Title</th>
-              <th className="pb-3 px-2 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('similarity_score')}>
-                Anchor <SortIcon col="similarity_score" />
+              <th className="pb-3 px-2 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('similarity_score_norm')}>
+                Anchor <SortIcon col="similarity_score_norm" />
               </th>
-              <th className="pb-3 px-2 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('centroid_similarity')}>
-                Centroid <SortIcon col="centroid_similarity" />
+              <th className="pb-3 px-2 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('centroid_similarity_norm')}>
+                Centroid <SortIcon col="centroid_similarity_norm" />
               </th>
               <th className="pb-3 px-2 font-medium">Quadrant</th>
               <th className="pb-3 px-2 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('word_count')}>
@@ -125,7 +125,7 @@ export default function PagesTable({ pages, gscAvailable, thresholdOff, threshol
           <tbody>
             {filtered.slice(0, 200).map((p, i) => {
               const isStruct = p.page_type === 'structural'
-              const quad = isStruct ? null : getQuadrant(p.similarity_score, p.centroid_similarity || 0, thresholdOff, centroidMedian)
+              const quad = isStruct ? null : getQuadrant(p.similarity_score_norm || 0, p.centroid_similarity_norm || 0, thresholdOff, centroidMedian)
               const qs = quad ? QUADRANT_STYLES[quad] : null
               return (
                 <tr key={i} onClick={() => onPageClick?.(p.id)}
@@ -135,13 +135,13 @@ export default function PagesTable({ pages, gscAvailable, thresholdOff, threshol
                     <div className="truncate text-xs text-slate-500" title={p.path}>{p.path}</div>
                   </td>
                   <td className="py-2.5 px-2">
-                    <span className="font-mono font-medium text-xs" style={{ color: isStruct ? '#64748b' : getColor(p.similarity_score, thresholdOff, thresholdOn) }}>
-                      {(p.similarity_score * 100).toFixed(0)}%
+                    <span className="font-mono font-medium text-xs" style={{ color: isStruct ? '#64748b' : getColor(p.similarity_score_norm || 0, thresholdOff, thresholdOn) }}>
+                      {((p.similarity_score_norm || 0) * 100).toFixed(0)}%
                     </span>
                   </td>
                   <td className="py-2.5 px-2">
                     <span className="font-mono text-xs text-slate-300">
-                      {p.centroid_similarity != null ? `${(p.centroid_similarity * 100).toFixed(0)}%` : '-'}
+                      {p.centroid_similarity_norm != null ? `${(p.centroid_similarity_norm * 100).toFixed(0)}%` : '-'}
                     </span>
                   </td>
                   <td className="py-2.5 px-2">

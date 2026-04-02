@@ -268,17 +268,31 @@ def get_page_detail(project_id: int, page_id: int):
         conn.close()
         raise HTTPException(404, "Page not found")
 
-    # Get project thresholds + centroid median for quadrant
+    # Get project thresholds + compute normalization ranges
     proj = conn.execute(
         "SELECT threshold_off_topic FROM projects WHERE id=?", (project_id,)
     ).fetchone()
     t_off = proj["threshold_off_topic"] if proj else 0.5
-    centroid_scores = conn.execute(
-        "SELECT centroid_similarity FROM pages WHERE project_id=? AND centroid_similarity IS NOT NULL AND page_type != 'structural'",
-        (project_id,)
-    ).fetchall()
-    centroid_values = sorted([r["centroid_similarity"] for r in centroid_scores])
-    centroid_median = centroid_values[len(centroid_values) // 2] if centroid_values else 0.5
+
+    range_rows = conn.execute("""
+        SELECT similarity_score, centroid_similarity FROM pages
+        WHERE project_id=? AND similarity_score IS NOT NULL AND page_type != 'structural'
+    """, (project_id,)).fetchall()
+
+    anchor_vals = [r["similarity_score"] for r in range_rows]
+    centroid_vals = [r["centroid_similarity"] for r in range_rows if r["centroid_similarity"] is not None]
+    a_mn, a_mx = (min(anchor_vals), max(anchor_vals)) if anchor_vals else (0, 1)
+    c_mn, c_mx = (min(centroid_vals), max(centroid_vals)) if centroid_vals else (0, 1)
+
+    def norm_a(v):
+        if a_mx == a_mn: return 0.5
+        return max(0, min(1, (v - a_mn) / (a_mx - a_mn)))
+    def norm_c(v):
+        if c_mx == c_mn: return 0.5
+        return max(0, min(1, (v - c_mn) / (c_mx - c_mn)))
+
+    norm_centroid_vals = sorted([norm_c(v) for v in centroid_vals])
+    centroid_median = norm_centroid_vals[len(norm_centroid_vals) // 2] if norm_centroid_vals else 0.5
 
     result = dict(page)
     if result.get("content_text"):
@@ -287,14 +301,18 @@ def get_page_detail(project_id: int, page_id: int):
         result["content_preview"] = ""
     del result["content_text"]
 
-    # Quadrant
-    anchor = result.get("similarity_score") or 0
-    centroid = result.get("centroid_similarity") or 0
-    if anchor >= t_off and centroid >= centroid_median:
+    # Normalized scores
+    result["similarity_score_norm"] = round(norm_a(result["similarity_score"] or 0), 4)
+    result["centroid_similarity_norm"] = round(norm_c(result["centroid_similarity"] or 0), 4)
+
+    # Quadrant (on normalized values)
+    na = result["similarity_score_norm"]
+    nc = result["centroid_similarity_norm"]
+    if na >= t_off and nc >= centroid_median:
         result["quadrant"] = "top_right"
-    elif anchor < t_off and centroid >= centroid_median:
+    elif na < t_off and nc >= centroid_median:
         result["quadrant"] = "top_left"
-    elif anchor >= t_off and centroid < centroid_median:
+    elif na >= t_off and nc < centroid_median:
         result["quadrant"] = "bottom_right"
     else:
         result["quadrant"] = "bottom_left"
@@ -363,52 +381,77 @@ def get_dashboard(project_id: int):
             "gsc_available": gsc_available, "gsc_connected": gsc_connected, "anchor_keywords": anchor_keywords,
         }
 
-    # Anchor scores
-    anchor_scores = [p["similarity_score"] for p in analyzed_pages]
-    avg_anchor = sum(anchor_scores) / len(anchor_scores)
-    sorted_anchor = sorted(anchor_scores)
-    mid = len(sorted_anchor) // 2
-    median_anchor = sorted_anchor[mid] if len(sorted_anchor) % 2 else (sorted_anchor[mid - 1] + sorted_anchor[mid]) / 2
+    # Min-max normalization helper
+    def normalize(values):
+        mn, mx = min(values), max(values)
+        if mx == mn:
+            return [0.5] * len(values)
+        return [(v - mn) / (mx - mn) for v in values]
 
-    # Centroid scores
-    centroid_scores = [p["centroid_similarity"] for p in analyzed_pages if p["centroid_similarity"] is not None]
-    avg_centroid = sum(centroid_scores) / len(centroid_scores) if centroid_scores else 0
-    sorted_centroid = sorted(centroid_scores)
-    cmid = len(sorted_centroid) // 2
-    centroid_median = sorted_centroid[cmid] if sorted_centroid else 0.5
+    # Raw scores from all analyzed pages
+    raw_anchor = [p["similarity_score"] or 0 for p in analyzed_pages]
+    raw_centroid = [p["centroid_similarity"] or 0 for p in analyzed_pages]
+    norm_anchor = normalize(raw_anchor)
+    norm_centroid = normalize(raw_centroid)
 
-    on_topic = sum(1 for s in anchor_scores if s >= t_on)
-    off_topic = sum(1 for s in anchor_scores if s < t_off)
+    # Build lookup: page_id → normalized scores (for all pages including structural)
+    all_raw_anchor = [p["similarity_score"] or 0 for p in all_pages]
+    all_raw_centroid = [p["centroid_similarity"] or 0 for p in all_pages]
+    # Normalize using the analyzed range (exclude structural from range computation)
+    a_mn, a_mx = min(raw_anchor), max(raw_anchor)
+    c_mn, c_mx = min(raw_centroid), max(raw_centroid)
+
+    def norm_a(v):
+        if a_mx == a_mn: return 0.5
+        return max(0, min(1, (v - a_mn) / (a_mx - a_mn)))
+
+    def norm_c(v):
+        if c_mx == c_mn: return 0.5
+        return max(0, min(1, (v - c_mn) / (c_mx - c_mn)))
+
+    # Stats on normalized values
+    avg_anchor_norm = sum(norm_anchor) / len(norm_anchor)
+    sorted_anchor_norm = sorted(norm_anchor)
+    mid = len(sorted_anchor_norm) // 2
+    median_anchor_norm = sorted_anchor_norm[mid]
+
+    avg_centroid_norm = sum(norm_centroid) / len(norm_centroid)
+    sorted_centroid_norm = sorted(norm_centroid)
+    cmid = len(sorted_centroid_norm) // 2
+    centroid_median = sorted_centroid_norm[cmid]
+
+    on_topic = sum(1 for s in norm_anchor if s >= t_on)
+    off_topic = sum(1 for s in norm_anchor if s < t_off)
     borderline = total_analyzed - on_topic - off_topic
     dilution_ratio = off_topic / total_analyzed if total_analyzed else 0
 
-    # Quadrant counts
+    # Quadrant counts (on normalized values)
     qc = {"top_right": 0, "top_left": 0, "bottom_right": 0, "bottom_left": 0}
-    for p in analyzed_pages:
-        a = p["similarity_score"] or 0
-        c = p["centroid_similarity"] or 0
-        if a >= t_off and c >= centroid_median:
+    for na, nc in zip(norm_anchor, norm_centroid):
+        if na >= t_off and nc >= centroid_median:
             qc["top_right"] += 1
-        elif a < t_off and c >= centroid_median:
+        elif na < t_off and nc >= centroid_median:
             qc["top_left"] += 1
-        elif a >= t_off and c < centroid_median:
+        elif na >= t_off and nc < centroid_median:
             qc["bottom_right"] += 1
         else:
             qc["bottom_left"] += 1
 
-    # Distribution buckets (anchor)
+    # Distribution buckets (normalized anchor)
     distribution = []
     for i in range(10):
         low = i / 10
         high = (i + 1) / 10
         label = f"{low:.1f}-{high:.1f}"
-        count = sum(1 for s in anchor_scores if low <= s < high) if i < 9 else sum(1 for s in anchor_scores if low <= s <= high)
+        count = sum(1 for s in norm_anchor if low <= s < high) if i < 9 else sum(1 for s in norm_anchor if low <= s <= high)
         distribution.append({"range": label, "count": count})
 
-    # Enrich pages with GSC data
+    # Enrich pages with normalized scores + GSC data
     for page in all_pages:
         url = page["url"]
         page["is_structural"] = page["page_type"] == "structural"
+        page["similarity_score_norm"] = round(norm_a(page["similarity_score"] or 0), 4)
+        page["centroid_similarity_norm"] = round(norm_c(page["centroid_similarity"] or 0), 4)
 
         gsc_agg = conn.execute("""
             SELECT SUM(clicks) as total_clicks, SUM(impressions) as total_impressions,
@@ -428,11 +471,11 @@ def get_dashboard(project_id: int):
         """, (project_id, url)).fetchall()
         page["top_queries"] = [q["query"] for q in top_queries]
 
-    # Weighted dilution ratio
+    # Weighted dilution ratio (using normalized scores)
     content_pages = [p for p in all_pages if not p["is_structural"]]
     total_traffic = sum(p["gsc_clicks"] for p in content_pages)
     if total_traffic > 0:
-        off_topic_traffic = sum(p["gsc_clicks"] for p in content_pages if p["similarity_score"] < t_off)
+        off_topic_traffic = sum(p["gsc_clicks"] for p in content_pages if p["similarity_score_norm"] < t_off)
         dilution_ratio_weighted = off_topic_traffic / total_traffic
     else:
         dilution_ratio_weighted = dilution_ratio
@@ -445,9 +488,9 @@ def get_dashboard(project_id: int):
             "total_pages": total_all,
             "total_pages_analyzed": total_analyzed,
             "structural_pages": structural_count,
-            "avg_anchor_similarity": round(avg_anchor, 3),
-            "median_anchor_similarity": round(median_anchor, 3),
-            "avg_centroid_similarity": round(avg_centroid, 3),
+            "avg_anchor_similarity": round(avg_anchor_norm, 3),
+            "median_anchor_similarity": round(median_anchor_norm, 3),
+            "avg_centroid_similarity": round(avg_centroid_norm, 3),
             "pages_on_topic": on_topic,
             "pages_off_topic": off_topic,
             "pages_borderline": borderline,
