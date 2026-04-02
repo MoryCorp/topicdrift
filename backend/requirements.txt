@@ -1,0 +1,11 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic-settings==2.7.1
+aiohttp==3.11.11
+beautifulsoup4==4.12.3
+lxml==5.3.0
+numpy==2.2.1
+openai==1.58.1
+google-auth-oauthlib==1.2.1
+google-api-python-client==2.155.0
+python-multipart==0.0.20
