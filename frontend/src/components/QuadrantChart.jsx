@@ -69,14 +69,19 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
   const data = filtered.map(p => {
     const q = getQuadrant(p.similarity_score_norm, p.centroid_similarity_norm, thresholdOff, centroidMedian)
     const hasClicks = gscAvailable && (p.gsc_clicks || 0) > 0
-    let radius = 20
+    // ZAxis range is area (pi*r^2), so we compute target area from desired radius
+    // With clicks: radius 12px (min) to 75px (max) → area 452 to 17671
+    // No clicks: radius 4px → area 50
+    // Without GSC: radius 14px → area 616
+    let area = 616
     if (gscAvailable) {
       if (hasClicks && sqrtSpan > 0) {
-        radius = 20 + ((Math.sqrt(p.gsc_clicks) - sqrtMin) / sqrtSpan) * 100
+        const r = 12 + ((Math.sqrt(p.gsc_clicks) - sqrtMin) / sqrtSpan) * 63
+        area = Math.PI * r * r
       } else if (hasClicks) {
-        radius = 20
+        area = Math.PI * 12 * 12
       } else {
-        radius = 4 // no clicks: tiny
+        area = Math.PI * 4 * 4 // ghost
       }
     }
     return {
@@ -85,7 +90,7 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
       _centroid: p.centroid_similarity_norm,
       _quadrant: q,
       _color: QUADRANT_COLORS[q],
-      _size: radius,
+      _size: area,
       _hasClicks: !gscAvailable || hasClicks,
     }
   })
@@ -104,7 +109,8 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
   const main = splitByQuadrant(withClicks)
   const ghost = splitByQuadrant(noClicks)
 
-  const zRange = gscAvailable ? [4, 120] : [20, 20]
+  // ZAxis range = area values; Recharts maps _size linearly within this range
+  const zRange = gscAvailable ? [50, 17700] : [616, 616]
 
   return (
     <div className="bg-slate-800 rounded-xl p-6">
