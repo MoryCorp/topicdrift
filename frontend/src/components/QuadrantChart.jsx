@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Label } from 'recharts'
 
 const QUADRANT_COLORS = {
@@ -40,6 +41,7 @@ function CustomTooltip({ active, payload }) {
 }
 
 export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centroidMedian, onPageClick }) {
+  const [showNoTraffic, setShowNoTraffic] = useState(true)
   const hasCentroid = pages.some(p => p.centroid_similarity_norm != null)
 
   if (!hasCentroid) {
@@ -58,19 +60,24 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
 
   const filtered = pages.filter(p => !p.is_structural && p.centroid_similarity_norm != null)
 
-  // Precompute sqrt range for bubble sizing
-  const clicks = gscAvailable ? filtered.map(p => p.gsc_clicks || 0) : []
-  const sqrtMin = clicks.length ? Math.sqrt(Math.min(...clicks)) : 0
-  const sqrtMax = clicks.length ? Math.sqrt(Math.max(...clicks)) : 0
+  // Precompute sqrt range for bubble sizing (only from pages with clicks)
+  const clickValues = gscAvailable ? filtered.filter(p => (p.gsc_clicks || 0) > 0).map(p => p.gsc_clicks) : []
+  const sqrtMin = clickValues.length ? Math.sqrt(Math.min(...clickValues)) : 0
+  const sqrtMax = clickValues.length ? Math.sqrt(Math.max(...clickValues)) : 0
   const sqrtSpan = sqrtMax - sqrtMin
 
   const data = filtered.map(p => {
     const q = getQuadrant(p.similarity_score_norm, p.centroid_similarity_norm, thresholdOff, centroidMedian)
+    const hasClicks = gscAvailable && (p.gsc_clicks || 0) > 0
     let radius = 20
-    if (gscAvailable && sqrtSpan > 0) {
-      radius = 20 + ((Math.sqrt(p.gsc_clicks || 0) - sqrtMin) / sqrtSpan) * 100
-    } else if (gscAvailable) {
-      radius = 20
+    if (gscAvailable) {
+      if (hasClicks && sqrtSpan > 0) {
+        radius = 20 + ((Math.sqrt(p.gsc_clicks) - sqrtMin) / sqrtSpan) * 100
+      } else if (hasClicks) {
+        radius = 20
+      } else {
+        radius = 4 // no clicks: tiny
+      }
     }
     return {
       ...p,
@@ -79,26 +86,44 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
       _quadrant: q,
       _color: QUADRANT_COLORS[q],
       _size: radius,
+      _hasClicks: !gscAvailable || hasClicks,
     }
   })
 
-  const topRight = data.filter(d => d._quadrant === 'top_right')
-  const topLeft = data.filter(d => d._quadrant === 'top_left')
-  const bottomRight = data.filter(d => d._quadrant === 'bottom_right')
-  const bottomLeft = data.filter(d => d._quadrant === 'bottom_left')
+  // Split into with-clicks and no-clicks groups
+  const withClicks = data.filter(d => d._hasClicks)
+  const noClicks = data.filter(d => !d._hasClicks)
 
-  // _size is already the target radius; pass through via identity range
-  const zRange = gscAvailable ? [20, 120] : [20, 20]
+  const splitByQuadrant = (arr) => ({
+    topRight: arr.filter(d => d._quadrant === 'top_right'),
+    topLeft: arr.filter(d => d._quadrant === 'top_left'),
+    bottomRight: arr.filter(d => d._quadrant === 'bottom_right'),
+    bottomLeft: arr.filter(d => d._quadrant === 'bottom_left'),
+  })
+
+  const main = splitByQuadrant(withClicks)
+  const ghost = splitByQuadrant(noClicks)
+
+  const zRange = gscAvailable ? [4, 120] : [20, 20]
 
   return (
     <div className="bg-slate-800 rounded-xl p-6">
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-semibold">Semantic Quadrants</h3>
-        {!gscAvailable && (
-          <span className="text-xs text-amber-400/70 bg-amber-400/10 px-2 py-1 rounded">
-            Import GSC data for click-weighted bubble sizes
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {gscAvailable && (
+            <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
+              <input type="checkbox" checked={showNoTraffic} onChange={e => setShowNoTraffic(e.target.checked)}
+                className="rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0" />
+              Show pages without traffic
+            </label>
+          )}
+          {!gscAvailable && (
+            <span className="text-xs text-amber-400/70 bg-amber-400/10 px-2 py-1 rounded">
+              Import GSC data for click-weighted bubble sizes
+            </span>
+          )}
+        </div>
       </div>
       <ResponsiveContainer width="100%" height={500}>
         <ScatterChart margin={{ top: 30, right: 30, bottom: 30, left: 20 }}
@@ -117,15 +142,24 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
           <ZAxis dataKey="_size" type="number" range={zRange} />
           <Tooltip content={<CustomTooltip />} />
 
-          {/* Threshold lines */}
           <ReferenceLine x={thresholdOff} stroke="rgba(255,255,255,0.2)" strokeDasharray="6 4" />
           <ReferenceLine y={centroidMedian} stroke="rgba(255,255,255,0.2)" strokeDasharray="6 4" />
 
-          {/* Quadrant data */}
-          <Scatter data={bottomLeft} fill={QUADRANT_COLORS.bottom_left} fillOpacity={0.6} cursor="pointer" />
-          <Scatter data={bottomRight} fill={QUADRANT_COLORS.bottom_right} fillOpacity={0.6} cursor="pointer" />
-          <Scatter data={topLeft} fill={QUADRANT_COLORS.top_left} fillOpacity={0.6} cursor="pointer" />
-          <Scatter data={topRight} fill={QUADRANT_COLORS.top_right} fillOpacity={0.6} cursor="pointer" />
+          {/* Ghost layer: no-clicks pages (tiny, faded) */}
+          {gscAvailable && showNoTraffic && (
+            <>
+              <Scatter data={ghost.bottomLeft} fill={QUADRANT_COLORS.bottom_left} fillOpacity={0.2} cursor="pointer" />
+              <Scatter data={ghost.bottomRight} fill={QUADRANT_COLORS.bottom_right} fillOpacity={0.2} cursor="pointer" />
+              <Scatter data={ghost.topLeft} fill={QUADRANT_COLORS.top_left} fillOpacity={0.2} cursor="pointer" />
+              <Scatter data={ghost.topRight} fill={QUADRANT_COLORS.top_right} fillOpacity={0.2} cursor="pointer" />
+            </>
+          )}
+
+          {/* Main layer: pages with clicks */}
+          <Scatter data={main.bottomLeft} fill={QUADRANT_COLORS.bottom_left} fillOpacity={0.6} cursor="pointer" />
+          <Scatter data={main.bottomRight} fill={QUADRANT_COLORS.bottom_right} fillOpacity={0.6} cursor="pointer" />
+          <Scatter data={main.topLeft} fill={QUADRANT_COLORS.top_left} fillOpacity={0.6} cursor="pointer" />
+          <Scatter data={main.topRight} fill={QUADRANT_COLORS.top_right} fillOpacity={0.6} cursor="pointer" />
         </ScatterChart>
       </ResponsiveContainer>
 
