@@ -1,9 +1,12 @@
 import asyncio
 import json
 import logging
+import os
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from config import settings
@@ -339,3 +342,18 @@ def gsc_data(project_id: int):
     """, (project_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ---------- Frontend static files ----------
+
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+if os.path.isdir(STATIC_DIR):
+    app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="static-assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        file_path = os.path.join(STATIC_DIR, full_path)
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(STATIC_DIR, "index.html"))

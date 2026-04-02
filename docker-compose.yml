@@ -1,8 +1,8 @@
 services:
-  backend:
+  app:
     build:
       context: .
-      dockerfile: Dockerfile.backend
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
@@ -15,16 +15,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    ports:
-      - "3000:80"
-    depends_on:
-      - backend
-    restart: unless-stopped
 
 volumes:
   app-data:
