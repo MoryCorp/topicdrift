@@ -107,12 +107,12 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
           <XAxis dataKey="_anchor" type="number" domain={[0, 1]} name="Anchor"
             tick={{ fill: '#94a3b8', fontSize: 11 }}
             tickFormatter={v => `${(v * 100).toFixed(0)}%`}>
-            <Label value="Proximity to target topic \u2192" position="bottom" offset={10} fill="#94a3b8" fontSize={12} />
+            <Label value={"Proximity to target topic \u2192"} position="bottom" offset={10} fill="#94a3b8" fontSize={12} />
           </XAxis>
           <YAxis dataKey="_centroid" type="number" domain={[0, 1]} name="Centroid"
             tick={{ fill: '#94a3b8', fontSize: 11 }}
             tickFormatter={v => `${(v * 100).toFixed(0)}%`}>
-            <Label value="\u2191 Proximity to site centroid" angle={-90} position="insideLeft" offset={5} fill="#94a3b8" fontSize={12} />
+            <Label value={"\u2191 Proximity to site centroid"} angle={-90} position="insideLeft" offset={5} fill="#94a3b8" fontSize={12} />
           </YAxis>
           <ZAxis dataKey="_size" type="number" range={zRange} />
           <Tooltip content={<CustomTooltip />} />
