@@ -94,14 +94,30 @@ def fetch_gsc_data(project_id: int, domain: str, start_date: str | None = None, 
     if not creds:
         raise ValueError("GSC not connected for this project")
 
-    service = build("searchconsole", "v1", credentials=creds)
+    service = build("searchconsole", "v1", credentials=creds, cache_discovery=False)
 
     if not end_date:
         end_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
     if not start_date:
         start_date = (datetime.now() - timedelta(days=93)).strftime("%Y-%m-%d")
 
-    site_url = f"sc-domain:{domain}"
+    # Try domain property first, then URL prefix
+    site_list = service.sites().list().execute()
+    available = [s["siteUrl"] for s in site_list.get("siteEntry", [])]
+    logger.info(f"GSC available properties: {available}")
+
+    domain_clean = domain.replace("www.", "")
+    site_url = None
+    for candidate in [f"sc-domain:{domain_clean}", f"https://{domain}/", f"http://{domain}/",
+                      f"https://www.{domain_clean}/", f"http://www.{domain_clean}/"]:
+        if candidate in available:
+            site_url = candidate
+            break
+
+    if not site_url:
+        raise ValueError(f"No GSC property found for {domain}. Available: {', '.join(available)}")
+
+    logger.info(f"Using GSC property: {site_url}")
     conn = get_connection()
 
     conn.execute(

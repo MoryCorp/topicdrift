@@ -448,7 +448,7 @@ def gsc_callback(code: str = Query(...), state: str = Query(...)):
 
 
 @app.post("/api/projects/{project_id}/gsc/fetch")
-def gsc_fetch(project_id: int, start_date: str | None = None, end_date: str | None = None):
+def gsc_fetch(project_id: int, start_date: str | None = Query(None), end_date: str | None = Query(None)):
     conn = get_connection()
     project = conn.execute("SELECT domain FROM projects WHERE id=?", (project_id,)).fetchone()
     conn.close()
@@ -458,6 +458,9 @@ def gsc_fetch(project_id: int, start_date: str | None = None, end_date: str | No
         fetch_gsc_data(project_id, project["domain"], start_date, end_date)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.exception(f"GSC fetch failed for project {project_id}")
+        raise HTTPException(500, f"GSC fetch error: {str(e)}")
     return {"status": "ok"}
 
 
