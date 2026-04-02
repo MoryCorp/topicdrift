@@ -6,26 +6,44 @@ function getColor(score, tOff, tOn) {
   return '#ef4444'
 }
 
-const typeStyles = {
+const QUADRANT_STYLES = {
+  top_right: { label: 'Core', bg: 'bg-green-500/20', text: 'text-green-300' },
+  top_left: { label: 'Dilution', bg: 'bg-red-500/20', text: 'text-red-300' },
+  bottom_right: { label: 'Isolated', bg: 'bg-blue-500/20', text: 'text-blue-300' },
+  bottom_left: { label: 'Outlier', bg: 'bg-slate-600/30', text: 'text-slate-400' },
+}
+
+const TYPE_STYLES = {
   content: '',
   blog: 'bg-purple-500/20 text-purple-300',
   structural: 'bg-slate-600/30 text-slate-400',
 }
 
-export default function PagesTable({ pages, gscAvailable, thresholdOff, thresholdOn, onPageClick }) {
+function getQuadrant(anchor, centroid, tOff, centroidMedian) {
+  if (anchor >= tOff && centroid >= centroidMedian) return 'top_right'
+  if (anchor < tOff && centroid >= centroidMedian) return 'top_left'
+  if (anchor >= tOff && centroid < centroidMedian) return 'bottom_right'
+  return 'bottom_left'
+}
+
+export default function PagesTable({ pages, gscAvailable, thresholdOff, thresholdOn, centroidMedian, onPageClick }) {
   const [sortKey, setSortKey] = useState('similarity_score')
   const [sortAsc, setSortAsc] = useState(true)
   const [search, setSearch] = useState('')
-  const [scoreFilter, setScoreFilter] = useState('all')
+  const [quadrantFilter, setQuadrantFilter] = useState('all')
   const [showStructural, setShowStructural] = useState(false)
 
   const filtered = useMemo(() => {
     let result = [...pages]
 
     if (!showStructural) result = result.filter(p => p.page_type !== 'structural')
-    if (scoreFilter === 'off') result = result.filter(p => p.similarity_score < thresholdOff && p.page_type !== 'structural')
-    else if (scoreFilter === 'border') result = result.filter(p => p.similarity_score >= thresholdOff && p.similarity_score < thresholdOn && p.page_type !== 'structural')
-    else if (scoreFilter === 'on') result = result.filter(p => p.similarity_score >= thresholdOn && p.page_type !== 'structural')
+
+    if (quadrantFilter !== 'all') {
+      result = result.filter(p => {
+        if (p.page_type === 'structural') return false
+        return getQuadrant(p.similarity_score, p.centroid_similarity || 0, thresholdOff, centroidMedian) === quadrantFilter
+      })
+    }
 
     if (search) {
       const q = search.toLowerCase()
@@ -43,7 +61,7 @@ export default function PagesTable({ pages, gscAvailable, thresholdOff, threshol
     })
 
     return result
-  }, [pages, sortKey, sortAsc, search, scoreFilter, showStructural, thresholdOff, thresholdOn])
+  }, [pages, sortKey, sortAsc, search, quadrantFilter, showStructural, thresholdOff, centroidMedian])
 
   const toggleSort = (key) => {
     if (sortKey === key) setSortAsc(!sortAsc)
@@ -63,18 +81,19 @@ export default function PagesTable({ pages, gscAvailable, thresholdOff, threshol
           <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
             <input type="checkbox" checked={showStructural} onChange={e => setShowStructural(e.target.checked)}
               className="rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0" />
-            Show structural
+            Structural
           </label>
-          <select value={scoreFilter} onChange={e => setScoreFilter(e.target.value)}
+          <select value={quadrantFilter} onChange={e => setQuadrantFilter(e.target.value)}
             className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm outline-none">
-            <option value="all">All scores</option>
-            <option value="off">Off-topic</option>
-            <option value="border">Borderline</option>
-            <option value="on">On-topic</option>
+            <option value="all">All quadrants</option>
+            <option value="top_right">Core business</option>
+            <option value="top_left">Dilution</option>
+            <option value="bottom_right">Isolated business</option>
+            <option value="bottom_left">Outliers</option>
           </select>
           <input type="text" value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search URL or title..."
-            className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm outline-none w-60 focus:ring-1 focus:ring-blue-500" />
+            className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm outline-none w-56 focus:ring-1 focus:ring-blue-500" />
         </div>
       </div>
 
@@ -83,22 +102,22 @@ export default function PagesTable({ pages, gscAvailable, thresholdOff, threshol
           <thead>
             <tr className="border-b border-slate-700 text-slate-400 text-left">
               <th className="pb-3 pr-4 font-medium">URL / Title</th>
-              <th className="pb-3 px-3 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('similarity_score')}>
-                Score <SortIcon col="similarity_score" />
+              <th className="pb-3 px-2 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('similarity_score')}>
+                Anchor <SortIcon col="similarity_score" />
               </th>
-              <th className="pb-3 px-3 font-medium">Type</th>
-              <th className="pb-3 px-3 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('word_count')}>
+              <th className="pb-3 px-2 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('centroid_similarity')}>
+                Centroid <SortIcon col="centroid_similarity" />
+              </th>
+              <th className="pb-3 px-2 font-medium">Quadrant</th>
+              <th className="pb-3 px-2 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('word_count')}>
                 Words <SortIcon col="word_count" />
               </th>
               {gscAvailable && (
                 <>
-                  <th className="pb-3 px-3 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('gsc_clicks')}>
+                  <th className="pb-3 px-2 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('gsc_clicks')}>
                     Clicks <SortIcon col="gsc_clicks" />
                   </th>
-                  <th className="pb-3 px-3 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('gsc_position')}>
-                    Pos. <SortIcon col="gsc_position" />
-                  </th>
-                  <th className="pb-3 pl-3 font-medium">Top Query</th>
+                  <th className="pb-3 pl-2 font-medium">Top Query</th>
                 </>
               )}
             </tr>
@@ -106,31 +125,37 @@ export default function PagesTable({ pages, gscAvailable, thresholdOff, threshol
           <tbody>
             {filtered.slice(0, 200).map((p, i) => {
               const isStruct = p.page_type === 'structural'
+              const quad = isStruct ? null : getQuadrant(p.similarity_score, p.centroid_similarity || 0, thresholdOff, centroidMedian)
+              const qs = quad ? QUADRANT_STYLES[quad] : null
               return (
                 <tr key={i} onClick={() => onPageClick?.(p.id)}
                   className={`border-b border-slate-700/50 cursor-pointer hover:bg-slate-700/30 transition ${isStruct ? 'opacity-50' : ''}`}>
-                  <td className="py-3 pr-4 max-w-md">
+                  <td className="py-2.5 pr-4 max-w-sm">
                     <div className="truncate font-medium text-slate-200" title={p.title}>{p.title || '(no title)'}</div>
                     <div className="truncate text-xs text-slate-500" title={p.path}>{p.path}</div>
                   </td>
-                  <td className="py-3 px-3">
-                    <span className="font-mono font-medium" style={{ color: isStruct ? '#64748b' : getColor(p.similarity_score, thresholdOff, thresholdOn) }}>
+                  <td className="py-2.5 px-2">
+                    <span className="font-mono font-medium text-xs" style={{ color: isStruct ? '#64748b' : getColor(p.similarity_score, thresholdOff, thresholdOn) }}>
                       {(p.similarity_score * 100).toFixed(0)}%
                     </span>
                   </td>
-                  <td className="py-3 px-3">
-                    {p.page_type !== 'content' && (
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${typeStyles[p.page_type] || ''}`}>
-                        {p.page_type}
-                      </span>
-                    )}
+                  <td className="py-2.5 px-2">
+                    <span className="font-mono text-xs text-slate-300">
+                      {p.centroid_similarity != null ? `${(p.centroid_similarity * 100).toFixed(0)}%` : '-'}
+                    </span>
                   </td>
-                  <td className="py-3 px-3 text-slate-400">{p.word_count?.toLocaleString()}</td>
+                  <td className="py-2.5 px-2">
+                    {isStruct ? (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-slate-600/30 text-slate-400">Structural</span>
+                    ) : qs ? (
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${qs.bg} ${qs.text}`}>{qs.label}</span>
+                    ) : null}
+                  </td>
+                  <td className="py-2.5 px-2 text-slate-400 text-xs">{p.word_count?.toLocaleString()}</td>
                   {gscAvailable && (
                     <>
-                      <td className="py-3 px-3 text-slate-300 font-medium">{p.gsc_clicks?.toLocaleString() || '0'}</td>
-                      <td className="py-3 px-3 text-slate-400">{p.gsc_position || '-'}</td>
-                      <td className="py-3 pl-3 text-slate-400 text-xs truncate max-w-[180px]">{p.top_queries?.[0] || '-'}</td>
+                      <td className="py-2.5 px-2 text-slate-300 font-medium text-xs">{p.gsc_clicks?.toLocaleString() || '0'}</td>
+                      <td className="py-2.5 pl-2 text-slate-400 text-xs truncate max-w-[160px]">{p.top_queries?.[0] || '-'}</td>
                     </>
                   )}
                 </tr>

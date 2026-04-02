@@ -245,7 +245,7 @@ def start_analysis(project_id: int, background_tasks: BackgroundTasks):
 def get_results(project_id: int):
     conn = get_connection()
     rows = conn.execute("""
-        SELECT id, url, path, title, h1, similarity_score, word_count, page_type, status_code
+        SELECT id, url, path, title, h1, similarity_score, centroid_similarity, word_count, page_type, status_code
         FROM pages WHERE project_id=? AND similarity_score IS NOT NULL
         ORDER BY similarity_score ASC
     """, (project_id,)).fetchall()
@@ -258,22 +258,44 @@ def get_page_detail(project_id: int, page_id: int):
     conn = get_connection()
     page = conn.execute("""
         SELECT id, url, path, title, h1, meta_description, content_text,
-               word_count, page_type, similarity_score
+               word_count, page_type, similarity_score, centroid_similarity
         FROM pages WHERE id=? AND project_id=?
     """, (page_id, project_id)).fetchone()
     if not page:
         conn.close()
         raise HTTPException(404, "Page not found")
 
+    # Get project thresholds + centroid median for quadrant
+    proj = conn.execute(
+        "SELECT threshold_off_topic FROM projects WHERE id=?", (project_id,)
+    ).fetchone()
+    t_off = proj["threshold_off_topic"] if proj else 0.5
+    centroid_scores = conn.execute(
+        "SELECT centroid_similarity FROM pages WHERE project_id=? AND centroid_similarity IS NOT NULL AND page_type != 'structural'",
+        (project_id,)
+    ).fetchall()
+    centroid_values = sorted([r["centroid_similarity"] for r in centroid_scores])
+    centroid_median = centroid_values[len(centroid_values) // 2] if centroid_values else 0.5
+
     result = dict(page)
-    # Content preview: first 500 chars
     if result.get("content_text"):
         result["content_preview"] = result["content_text"][:500]
     else:
         result["content_preview"] = ""
     del result["content_text"]
 
-    # GSC queries for this page
+    # Quadrant
+    anchor = result.get("similarity_score") or 0
+    centroid = result.get("centroid_similarity") or 0
+    if anchor >= t_off and centroid >= centroid_median:
+        result["quadrant"] = "top_right"
+    elif anchor < t_off and centroid >= centroid_median:
+        result["quadrant"] = "top_left"
+    elif anchor >= t_off and centroid < centroid_median:
+        result["quadrant"] = "bottom_right"
+    else:
+        result["quadrant"] = "bottom_left"
+
     gsc_queries = conn.execute("""
         SELECT query, SUM(clicks) as clicks, SUM(impressions) as impressions,
                AVG(position) as position, AVG(ctr) as ctr
@@ -303,9 +325,15 @@ def get_dashboard(project_id: int):
     t_off = project_dict["threshold_off_topic"]
     t_on = project_dict["threshold_on_topic"]
 
-    # All pages with scores
+    # GSC state
+    gsc_row = conn.execute("SELECT 1 FROM gsc_data WHERE project_id=? LIMIT 1", (project_id,)).fetchone()
+    gsc_available = gsc_row is not None
+    gsc_token_row = conn.execute("SELECT 1 FROM gsc_tokens WHERE project_id=?", (project_id,)).fetchone()
+    gsc_connected = gsc_token_row is not None
+
+    # All pages with both scores
     all_pages = conn.execute("""
-        SELECT id, url, path, title, similarity_score, word_count, page_type
+        SELECT id, url, path, title, similarity_score, centroid_similarity, word_count, page_type
         FROM pages WHERE project_id=? AND similarity_score IS NOT NULL
         ORDER BY similarity_score ASC
     """, (project_id,)).fetchall()
@@ -316,43 +344,62 @@ def get_dashboard(project_id: int):
     analyzed_pages = [p for p in all_pages if p["page_type"] != "structural"]
     total_analyzed = len(analyzed_pages)
 
-    # GSC state (needed for both empty and full responses)
-    gsc_row = conn.execute("SELECT 1 FROM gsc_data WHERE project_id=? LIMIT 1", (project_id,)).fetchone()
-    gsc_available = gsc_row is not None
-    gsc_token_row = conn.execute("SELECT 1 FROM gsc_tokens WHERE project_id=?", (project_id,)).fetchone()
-    gsc_connected = gsc_token_row is not None
-
-    empty_response = {
-        "project": project_dict,
-        "stats": {"total_pages": total_all, "total_pages_analyzed": 0, "structural_pages": structural_count,
-                  "avg_similarity": 0, "median_similarity": 0, "pages_on_topic": 0,
-                  "pages_off_topic": 0, "pages_borderline": 0, "dilution_ratio": 0, "dilution_ratio_weighted": 0},
-        "distribution": [], "pages": [], "cluster_bubbles": [],
-        "gsc_available": gsc_available, "gsc_connected": gsc_connected, "anchor_keywords": anchor_keywords,
+    empty_stats = {
+        "total_pages": total_all, "total_pages_analyzed": 0, "structural_pages": structural_count,
+        "avg_anchor_similarity": 0, "median_anchor_similarity": 0, "avg_centroid_similarity": 0,
+        "pages_on_topic": 0, "pages_off_topic": 0, "pages_borderline": 0,
+        "dilution_ratio": 0, "dilution_ratio_weighted": 0,
+        "quadrant_counts": {"top_right": 0, "top_left": 0, "bottom_right": 0, "bottom_left": 0},
     }
 
     if total_analyzed == 0:
         conn.close()
-        return empty_response
+        return {
+            "project": project_dict, "stats": empty_stats,
+            "distribution": [], "pages": [], "centroid_median": 0.5,
+            "gsc_available": gsc_available, "gsc_connected": gsc_connected, "anchor_keywords": anchor_keywords,
+        }
 
-    scores = [p["similarity_score"] for p in analyzed_pages]
-    avg_sim = sum(scores) / len(scores)
-    sorted_scores = sorted(scores)
-    mid = len(sorted_scores) // 2
-    median_sim = sorted_scores[mid] if len(sorted_scores) % 2 else (sorted_scores[mid - 1] + sorted_scores[mid]) / 2
+    # Anchor scores
+    anchor_scores = [p["similarity_score"] for p in analyzed_pages]
+    avg_anchor = sum(anchor_scores) / len(anchor_scores)
+    sorted_anchor = sorted(anchor_scores)
+    mid = len(sorted_anchor) // 2
+    median_anchor = sorted_anchor[mid] if len(sorted_anchor) % 2 else (sorted_anchor[mid - 1] + sorted_anchor[mid]) / 2
 
-    on_topic = sum(1 for s in scores if s >= t_on)
-    off_topic = sum(1 for s in scores if s < t_off)
+    # Centroid scores
+    centroid_scores = [p["centroid_similarity"] for p in analyzed_pages if p["centroid_similarity"] is not None]
+    avg_centroid = sum(centroid_scores) / len(centroid_scores) if centroid_scores else 0
+    sorted_centroid = sorted(centroid_scores)
+    cmid = len(sorted_centroid) // 2
+    centroid_median = sorted_centroid[cmid] if sorted_centroid else 0.5
+
+    on_topic = sum(1 for s in anchor_scores if s >= t_on)
+    off_topic = sum(1 for s in anchor_scores if s < t_off)
     borderline = total_analyzed - on_topic - off_topic
     dilution_ratio = off_topic / total_analyzed if total_analyzed else 0
 
-    # Distribution buckets
+    # Quadrant counts
+    qc = {"top_right": 0, "top_left": 0, "bottom_right": 0, "bottom_left": 0}
+    for p in analyzed_pages:
+        a = p["similarity_score"] or 0
+        c = p["centroid_similarity"] or 0
+        if a >= t_off and c >= centroid_median:
+            qc["top_right"] += 1
+        elif a < t_off and c >= centroid_median:
+            qc["top_left"] += 1
+        elif a >= t_off and c < centroid_median:
+            qc["bottom_right"] += 1
+        else:
+            qc["bottom_left"] += 1
+
+    # Distribution buckets (anchor)
     distribution = []
     for i in range(10):
         low = i / 10
         high = (i + 1) / 10
         label = f"{low:.1f}-{high:.1f}"
-        count = sum(1 for s in scores if low <= s < high) if i < 9 else sum(1 for s in scores if low <= s <= high)
+        count = sum(1 for s in anchor_scores if low <= s < high) if i < 9 else sum(1 for s in anchor_scores if low <= s <= high)
         distribution.append({"range": label, "count": count})
 
     # Enrich pages with GSC data
@@ -387,23 +434,6 @@ def get_dashboard(project_id: int):
     else:
         dilution_ratio_weighted = dilution_ratio
 
-    # Cluster bubbles
-    cluster_bubbles = []
-    for i in range(10):
-        low = i / 10
-        high = (i + 1) / 10
-        cluster_pages = [p for p in content_pages if (low <= p["similarity_score"] < high if i < 9 else low <= p["similarity_score"] <= high)]
-        if cluster_pages:
-            positions = [p["gsc_position"] for p in cluster_pages if p["gsc_position"] is not None]
-            cluster_bubbles.append({
-                "range": f"{low:.1f}-{high:.1f}",
-                "avg_similarity": round((low + high) / 2, 2),
-                "total_clicks": sum(p["gsc_clicks"] for p in cluster_pages),
-                "total_impressions": sum(p["gsc_impressions"] for p in cluster_pages),
-                "avg_position": round(sum(positions) / len(positions), 1) if positions else None,
-                "page_count": len(cluster_pages),
-            })
-
     conn.close()
 
     return {
@@ -412,17 +442,19 @@ def get_dashboard(project_id: int):
             "total_pages": total_all,
             "total_pages_analyzed": total_analyzed,
             "structural_pages": structural_count,
-            "avg_similarity": round(avg_sim, 3),
-            "median_similarity": round(median_sim, 3),
+            "avg_anchor_similarity": round(avg_anchor, 3),
+            "median_anchor_similarity": round(median_anchor, 3),
+            "avg_centroid_similarity": round(avg_centroid, 3),
             "pages_on_topic": on_topic,
             "pages_off_topic": off_topic,
             "pages_borderline": borderline,
             "dilution_ratio": round(dilution_ratio, 3),
             "dilution_ratio_weighted": round(dilution_ratio_weighted, 3),
+            "quadrant_counts": qc,
         },
         "distribution": distribution,
         "pages": all_pages,
-        "cluster_bubbles": cluster_bubbles,
+        "centroid_median": round(centroid_median, 3),
         "gsc_available": gsc_available,
         "gsc_connected": gsc_connected,
         "anchor_keywords": anchor_keywords,

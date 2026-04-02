@@ -24,6 +24,7 @@ def init_db():
             domain TEXT NOT NULL,
             anchor_keywords TEXT DEFAULT '[]',
             anchor_embedding BLOB,
+            centroid_embedding BLOB,
             lang_filter TEXT,
             threshold_off_topic REAL DEFAULT 0.5,
             threshold_on_topic REAL DEFAULT 0.7,
@@ -46,6 +47,7 @@ def init_db():
             page_type TEXT DEFAULT 'content',
             embedding BLOB,
             similarity_score REAL,
+            centroid_similarity REAL,
             status_code INTEGER,
             crawled_at TEXT DEFAULT (datetime('now'))
         );
@@ -87,15 +89,12 @@ def init_db():
         );
     """)
 
-    # Migrations for existing databases
     _migrate(cursor)
-
     conn.commit()
     conn.close()
 
 
 def _migrate(cursor):
-    """Add columns that may not exist in older databases."""
     existing = set()
     for table in ["projects", "pages", "crawl_jobs"]:
         for row in cursor.execute(f"PRAGMA table_info({table})"):
@@ -105,9 +104,11 @@ def _migrate(cursor):
         ("projects", "lang_filter", "TEXT"),
         ("projects", "threshold_off_topic", "REAL DEFAULT 0.5"),
         ("projects", "threshold_on_topic", "REAL DEFAULT 0.7"),
+        ("projects", "centroid_embedding", "BLOB"),
         ("pages", "path", "TEXT NOT NULL DEFAULT '/'"),
         ("pages", "lang", "TEXT"),
         ("pages", "page_type", "TEXT DEFAULT 'content'"),
+        ("pages", "centroid_similarity", "REAL"),
         ("crawl_jobs", "pages_skipped_lang", "INTEGER DEFAULT 0"),
         ("crawl_jobs", "pages_skipped_thin", "INTEGER DEFAULT 0"),
     ]

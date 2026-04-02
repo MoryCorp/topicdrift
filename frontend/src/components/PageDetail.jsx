@@ -7,7 +7,14 @@ function getColor(score, tOff = 0.5, tOn = 0.7) {
   return '#ef4444'
 }
 
-const typeStyles = {
+const QUADRANT_META = {
+  top_right: { label: 'Core business', color: '#22c55e', bg: 'bg-green-500/20 text-green-300' },
+  top_left: { label: 'Dilution', color: '#ef4444', bg: 'bg-red-500/20 text-red-300' },
+  bottom_right: { label: 'Isolated business', color: '#3b82f6', bg: 'bg-blue-500/20 text-blue-300' },
+  bottom_left: { label: 'Outlier', color: '#64748b', bg: 'bg-slate-600/30 text-slate-400' },
+}
+
+const TYPE_STYLES = {
   content: 'bg-blue-500/20 text-blue-300',
   blog: 'bg-purple-500/20 text-purple-300',
   structural: 'bg-slate-600/30 text-slate-400',
@@ -25,9 +32,10 @@ export default function PageDetail({ projectId, pageId, thresholdOff, thresholdO
 
   if (!pageId) return null
 
+  const qm = data?.quadrant ? QUADRANT_META[data.quadrant] : null
+
   return (
     <div className="fixed inset-y-0 right-0 w-full max-w-lg bg-slate-900 border-l border-slate-700 shadow-2xl z-50 flex flex-col">
-      {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-slate-700">
         <h3 className="font-semibold text-sm">Page Detail</h3>
         <button onClick={onClose} className="text-slate-400 hover:text-slate-200 transition p-1">
@@ -37,19 +45,35 @@ export default function PageDetail({ projectId, pageId, thresholdOff, thresholdO
         </button>
       </div>
 
-      {/* Body */}
       <div className="flex-1 overflow-y-auto p-4 space-y-5">
         {loading ? (
           <div className="text-center py-10 text-slate-400">Loading...</div>
         ) : data ? (
           <>
-            {/* Score */}
-            <div className="text-center">
-              <div className="text-5xl font-bold" style={{ color: getColor(data.similarity_score, thresholdOff, thresholdOn) }}>
-                {(data.similarity_score * 100).toFixed(0)}%
+            {/* Dual scores */}
+            <div className="flex gap-4">
+              <div className="flex-1 text-center bg-slate-800 rounded-lg p-4">
+                <div className="text-3xl font-bold" style={{ color: getColor(data.similarity_score, thresholdOff, thresholdOn) }}>
+                  {(data.similarity_score * 100).toFixed(0)}%
+                </div>
+                <div className="text-slate-500 text-xs mt-1">Anchor score</div>
               </div>
-              <div className="text-slate-500 text-sm mt-1">similarity score</div>
+              <div className="flex-1 text-center bg-slate-800 rounded-lg p-4">
+                <div className="text-3xl font-bold text-slate-200">
+                  {data.centroid_similarity != null ? `${(data.centroid_similarity * 100).toFixed(0)}%` : '-'}
+                </div>
+                <div className="text-slate-500 text-xs mt-1">Centroid score</div>
+              </div>
             </div>
+
+            {/* Quadrant badge */}
+            {qm && (
+              <div className="text-center">
+                <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${qm.bg}`}>
+                  {qm.label}
+                </span>
+              </div>
+            )}
 
             {/* Meta */}
             <div className="space-y-3">
@@ -70,7 +94,7 @@ export default function PageDetail({ projectId, pageId, thresholdOff, thresholdO
                 </div>
               )}
               <div className="flex items-center gap-3">
-                <span className={`text-xs px-2 py-0.5 rounded-full ${typeStyles[data.page_type] || typeStyles.content}`}>
+                <span className={`text-xs px-2 py-0.5 rounded-full ${TYPE_STYLES[data.page_type] || TYPE_STYLES.content}`}>
                   {data.page_type}
                 </span>
                 <span className="text-xs text-slate-500">{data.word_count?.toLocaleString()} words</span>
@@ -84,7 +108,6 @@ export default function PageDetail({ projectId, pageId, thresholdOff, thresholdO
               </a>
             </div>
 
-            {/* Content preview */}
             {data.content_preview && (
               <div>
                 <div className="text-xs text-slate-500 mb-1">Content Preview</div>
@@ -94,7 +117,6 @@ export default function PageDetail({ projectId, pageId, thresholdOff, thresholdO
               </div>
             )}
 
-            {/* GSC queries */}
             {data.gsc_queries?.length > 0 && (
               <div>
                 <div className="text-xs text-slate-500 mb-2">Top GSC Queries</div>
