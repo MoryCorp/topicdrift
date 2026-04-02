@@ -66,7 +66,7 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
         _centroid: p.centroid_similarity_norm,
         _quadrant: q,
         _color: QUADRANT_COLORS[q],
-        _size: gscAvailable ? Math.max(p.gsc_clicks || 1, 1) : Math.max(p.word_count || 100, 100),
+        _size: gscAvailable ? Math.log((p.gsc_clicks || 0) + 1) + 1 : 1,
       }
     })
 
@@ -75,7 +75,8 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
   const bottomRight = data.filter(d => d._quadrant === 'bottom_right')
   const bottomLeft = data.filter(d => d._quadrant === 'bottom_left')
 
-  const zRange = gscAvailable ? [4, 40] : [5, 15]
+  // min 8px, max 40px radius; uniform 12px without GSC
+  const zRange = gscAvailable ? [8, 40] : [12, 12]
 
   return (
     <div className="bg-slate-800 rounded-xl p-6">
