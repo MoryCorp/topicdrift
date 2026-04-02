@@ -316,13 +316,19 @@ def get_dashboard(project_id: int):
     analyzed_pages = [p for p in all_pages if p["page_type"] != "structural"]
     total_analyzed = len(analyzed_pages)
 
+    # GSC state (needed for both empty and full responses)
+    gsc_row = conn.execute("SELECT 1 FROM gsc_data WHERE project_id=? LIMIT 1", (project_id,)).fetchone()
+    gsc_available = gsc_row is not None
+    gsc_token_row = conn.execute("SELECT 1 FROM gsc_tokens WHERE project_id=?", (project_id,)).fetchone()
+    gsc_connected = gsc_token_row is not None
+
     empty_response = {
         "project": project_dict,
         "stats": {"total_pages": total_all, "total_pages_analyzed": 0, "structural_pages": structural_count,
                   "avg_similarity": 0, "median_similarity": 0, "pages_on_topic": 0,
                   "pages_off_topic": 0, "pages_borderline": 0, "dilution_ratio": 0, "dilution_ratio_weighted": 0},
         "distribution": [], "pages": [], "cluster_bubbles": [],
-        "gsc_available": False, "anchor_keywords": anchor_keywords,
+        "gsc_available": gsc_available, "gsc_connected": gsc_connected, "anchor_keywords": anchor_keywords,
     }
 
     if total_analyzed == 0:
@@ -348,10 +354,6 @@ def get_dashboard(project_id: int):
         label = f"{low:.1f}-{high:.1f}"
         count = sum(1 for s in scores if low <= s < high) if i < 9 else sum(1 for s in scores if low <= s <= high)
         distribution.append({"range": label, "count": count})
-
-    # GSC availability
-    gsc_row = conn.execute("SELECT 1 FROM gsc_data WHERE project_id=? LIMIT 1", (project_id,)).fetchone()
-    gsc_available = gsc_row is not None
 
     # Enrich pages with GSC data
     for page in all_pages:
@@ -422,6 +424,7 @@ def get_dashboard(project_id: int):
         "pages": all_pages,
         "cluster_bubbles": cluster_bubbles,
         "gsc_available": gsc_available,
+        "gsc_connected": gsc_connected,
         "anchor_keywords": anchor_keywords,
     }
 

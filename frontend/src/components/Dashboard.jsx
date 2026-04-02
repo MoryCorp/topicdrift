@@ -56,7 +56,7 @@ export default function Dashboard({ projectId, onBack }) {
   if (loading) return <div className="text-center py-20 text-slate-400">Loading dashboard...</div>
   if (!data) return <div className="text-center py-20 text-red-400">Failed to load data</div>
 
-  const { project, stats, distribution, pages, cluster_bubbles, gsc_available, anchor_keywords } = data
+  const { project, stats, distribution, pages, cluster_bubbles, gsc_available, gsc_connected, anchor_keywords } = data
   const tOff = project.threshold_off_topic || 0.5
   const tOn = project.threshold_on_topic || 0.7
 
@@ -101,7 +101,11 @@ export default function Dashboard({ projectId, onBack }) {
           <div>
             <h3 className="font-semibold text-sm">Search Console Data</h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              {gsc_available ? 'GSC data loaded - traffic metrics active' : 'Import a CSV from GSC for traffic-weighted analysis'}
+              {gsc_available
+                ? 'GSC data loaded - traffic metrics active'
+                : gsc_connected
+                  ? 'OAuth connected - fetch data or import CSV'
+                  : 'Import a CSV from GSC or connect via OAuth'}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -109,13 +113,13 @@ export default function Dashboard({ projectId, onBack }) {
               {gscLoading ? 'Uploading...' : gsc_available ? 'Re-import CSV' : 'Import GSC CSV'}
               <input ref={fileRef} type="file" accept=".csv" onChange={uploadCsv} className="hidden" />
             </label>
-            {gsc_available && (
+            {gsc_connected && (
               <button onClick={fetchGsc} disabled={gscLoading}
                 className="px-3 py-1.5 bg-green-600/20 text-green-400 hover:bg-green-600/30 rounded-lg text-sm transition disabled:opacity-50">
-                Refresh via API
+                {gscLoading ? 'Fetching...' : gsc_available ? 'Refresh via API' : 'Fetch GSC Data'}
               </button>
             )}
-            {!gsc_available && (
+            {!gsc_connected && (
               <button onClick={connectGsc}
                 className="px-3 py-1.5 bg-slate-700 text-slate-400 hover:bg-slate-600 rounded-lg text-sm transition">
                 Connect OAuth
