@@ -32,6 +32,11 @@ export const api = {
   getResults: (id) => request(`/projects/${id}/results`),
   getPageDetail: (projectId, pageId) => request(`/projects/${projectId}/results/${pageId}`),
   getDashboard: (id) => request(`/projects/${id}/dashboard`),
+  exportLlm: async (id) => {
+    const res = await fetch(`/api/projects/${id}/export/llm`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.text();
+  },
 
   // GSC
   getGscAuthUrl: (id) => request(`/gsc/auth-url?project_id=${id}`),

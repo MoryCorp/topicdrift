@@ -461,6 +461,154 @@ def get_dashboard(project_id: int):
     }
 
 
+# ---------- Export LLM ----------
+
+@app.get("/api/projects/{project_id}/export/llm")
+def export_llm(project_id: int):
+    from fastapi.responses import PlainTextResponse
+    from datetime import datetime
+
+    conn = get_connection()
+    project = conn.execute(
+        "SELECT name, domain, anchor_keywords, threshold_off_topic, threshold_on_topic FROM projects WHERE id=?",
+        (project_id,)
+    ).fetchone()
+    if not project:
+        conn.close()
+        raise HTTPException(404, "Project not found")
+
+    domain = project["domain"]
+    keywords = json.loads(project["anchor_keywords"])
+    t_off = project["threshold_off_topic"]
+
+    # Pages with scores
+    pages = conn.execute("""
+        SELECT p.url, p.path, p.title, p.similarity_score, p.centroid_similarity,
+               p.word_count, p.page_type
+        FROM pages p WHERE p.project_id=? AND p.similarity_score IS NOT NULL
+        ORDER BY p.similarity_score ASC
+    """, (project_id,)).fetchall()
+    pages = [dict(r) for r in pages]
+
+    analyzed = [p for p in pages if p["page_type"] != "structural"]
+    structural_count = len(pages) - len(analyzed)
+
+    # Centroid median
+    c_scores = sorted([p["centroid_similarity"] for p in analyzed if p["centroid_similarity"] is not None])
+    centroid_median = c_scores[len(c_scores) // 2] if c_scores else 0.5
+
+    # Stats
+    anchor_scores = [p["similarity_score"] for p in analyzed]
+    avg_anchor = sum(anchor_scores) / len(anchor_scores) if anchor_scores else 0
+    centroid_vals = [p["centroid_similarity"] for p in analyzed if p["centroid_similarity"] is not None]
+    avg_centroid = sum(centroid_vals) / len(centroid_vals) if centroid_vals else 0
+    off_topic = sum(1 for s in anchor_scores if s < t_off)
+    dilution_ratio = off_topic / len(analyzed) if analyzed else 0
+
+    # Quadrants
+    def quad(p):
+        a = p["similarity_score"] or 0
+        c = p["centroid_similarity"] or 0
+        if a >= t_off and c >= centroid_median: return "top_right"
+        if a < t_off and c >= centroid_median: return "top_left"
+        if a >= t_off and c < centroid_median: return "bottom_right"
+        return "bottom_left"
+
+    for p in analyzed:
+        p["_quad"] = quad(p)
+
+    qc = {"top_right": 0, "top_left": 0, "bottom_right": 0, "bottom_left": 0}
+    for p in analyzed:
+        qc[p["_quad"]] += 1
+
+    # Enrich with GSC
+    for p in analyzed:
+        gsc = conn.execute("""
+            SELECT SUM(clicks) as c, SUM(impressions) as i, AVG(position) as pos
+            FROM gsc_data WHERE project_id=? AND page_url=?
+        """, (project_id, p["url"])).fetchone()
+        p["clicks"] = gsc["c"] or 0 if gsc else 0
+        p["impressions"] = gsc["i"] or 0 if gsc else 0
+        p["position"] = round(gsc["pos"], 1) if gsc and gsc["pos"] else None
+        top_q = conn.execute("""
+            SELECT query FROM gsc_data WHERE project_id=? AND page_url=? AND query != ''
+            ORDER BY clicks DESC LIMIT 1
+        """, (project_id, p["url"])).fetchone()
+        p["top_query"] = top_q["query"] if top_q else ""
+
+    # Weighted dilution
+    total_traffic = sum(p["clicks"] for p in analyzed)
+    if total_traffic > 0:
+        off_traffic = sum(p["clicks"] for p in analyzed if p["similarity_score"] < t_off)
+        dilution_weighted = off_traffic / total_traffic
+    else:
+        dilution_weighted = dilution_ratio
+
+    conn.close()
+
+    # Build markdown
+    lines = []
+    lines.append(f"# Analyse de dilution thématique — {domain}\n")
+    lines.append("## Contexte")
+    lines.append(f"- Domaine : {domain}")
+    lines.append(f"- Thématique visée (anchor keywords) : {', '.join(keywords)}")
+    lines.append(f"- Pages analysées : {len(analyzed)} (hors {structural_count} pages structurelles)")
+    lines.append(f"- Date d'analyse : {datetime.now().strftime('%Y-%m-%d')}\n")
+
+    lines.append("## Scores globaux")
+    lines.append(f"- Similarité moyenne vs thématique visée : {avg_anchor * 100:.0f}%")
+    lines.append(f"- Similarité moyenne vs centroïde du site : {avg_centroid * 100:.0f}%")
+    lines.append(f"- Ratio de dilution : {dilution_ratio * 100:.0f}% ({dilution_weighted * 100:.0f}% pondéré par trafic)\n")
+
+    lines.append("## Répartition par quadrant")
+    lines.append(f"- Cœur business (thématique + centroïde) : {qc['top_right']} pages")
+    lines.append(f"- Dilution (centroïde + thématique faible) : {qc['top_left']} pages")
+    lines.append(f"- Business isolé (thématique + centroïde faible) : {qc['bottom_right']} pages")
+    lines.append(f"- Outliers (thématique faible + centroïde faible) : {qc['bottom_left']} pages\n")
+
+    # Top diluting pages
+    diluting = sorted([p for p in analyzed if p["_quad"] == "top_left"], key=lambda x: -x["clicks"])[:20]
+    if diluting:
+        lines.append("## Top 20 pages les plus diluantes (quadrant haut-gauche)")
+        lines.append("| URL | Titre | Score Anchor | Score Centroid | Clicks | Top Query |")
+        lines.append("|-----|-------|-------------|---------------|--------|-----------|")
+        for p in diluting:
+            lines.append(f"| {p['path']} | {(p['title'] or '')[:50]} | {p['similarity_score'] * 100:.0f}% | {(p['centroid_similarity'] or 0) * 100:.0f}% | {p['clicks']} | {p['top_query'][:40]} |")
+        lines.append("")
+
+    # Isolated business pages
+    isolated = sorted([p for p in analyzed if p["_quad"] == "bottom_right"], key=lambda x: -x["clicks"])[:20]
+    if isolated:
+        lines.append("## Top 20 pages business isolées (quadrant bas-droite)")
+        lines.append("| URL | Titre | Score Anchor | Score Centroid | Clicks | Top Query |")
+        lines.append("|-----|-------|-------------|---------------|--------|-----------|")
+        for p in isolated:
+            lines.append(f"| {p['path']} | {(p['title'] or '')[:50]} | {p['similarity_score'] * 100:.0f}% | {(p['centroid_similarity'] or 0) * 100:.0f}% | {p['clicks']} | {p['top_query'][:40]} |")
+        lines.append("")
+
+    # Top core pages
+    core = sorted([p for p in analyzed if p["_quad"] == "top_right"], key=lambda x: -x["clicks"])[:10]
+    if core:
+        lines.append("## Pages cœur les plus performantes (top 10 par clicks)")
+        lines.append("| URL | Titre | Score Anchor | Clicks | Position |")
+        lines.append("|-----|-------|-------------|--------|----------|")
+        for p in core:
+            pos = f"{p['position']}" if p['position'] else "-"
+            lines.append(f"| {p['path']} | {(p['title'] or '')[:50]} | {p['similarity_score'] * 100:.0f}% | {p['clicks']} | {pos} |")
+        lines.append("")
+
+    # Distribution
+    lines.append("## Distribution complète")
+    for i in range(10):
+        low = i / 10
+        high = (i + 1) / 10
+        count = sum(1 for s in anchor_scores if (low <= s < high if i < 9 else low <= s <= high))
+        bar = "█" * count
+        lines.append(f"  {low:.1f}-{high:.1f}: {bar} {count} pages")
+
+    return PlainTextResponse(content="\n".join(lines), media_type="text/markdown")
+
+
 # ---------- GSC ----------
 
 @app.get("/api/gsc/auth-url")
