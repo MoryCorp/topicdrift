@@ -1,15 +1,10 @@
 import sqlite3
 import os
-from pathlib import Path
 from config import settings
 
 
-def get_db_path() -> str:
-    return settings.database_path
-
-
 def get_connection() -> sqlite3.Connection:
-    db_path = get_db_path()
+    db_path = settings.database_path
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -29,6 +24,9 @@ def init_db():
             domain TEXT NOT NULL,
             anchor_keywords TEXT DEFAULT '[]',
             anchor_embedding BLOB,
+            lang_filter TEXT,
+            threshold_off_topic REAL DEFAULT 0.5,
+            threshold_on_topic REAL DEFAULT 0.7,
             status TEXT DEFAULT 'created',
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
@@ -38,14 +36,16 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             url TEXT NOT NULL,
+            path TEXT NOT NULL DEFAULT '/',
             title TEXT,
             h1 TEXT,
             meta_description TEXT,
             content_text TEXT,
             word_count INTEGER DEFAULT 0,
+            lang TEXT,
+            page_type TEXT DEFAULT 'content',
             embedding BLOB,
             similarity_score REAL,
-            topic_label TEXT,
             status_code INTEGER,
             crawled_at TEXT DEFAULT (datetime('now'))
         );
@@ -56,7 +56,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             page_url TEXT NOT NULL,
-            query TEXT NOT NULL,
+            query TEXT NOT NULL DEFAULT '',
             clicks INTEGER DEFAULT 0,
             impressions INTEGER DEFAULT 0,
             ctr REAL DEFAULT 0.0,
@@ -79,11 +79,42 @@ def init_db():
             status TEXT DEFAULT 'pending',
             pages_found INTEGER DEFAULT 0,
             pages_crawled INTEGER DEFAULT 0,
+            pages_skipped_lang INTEGER DEFAULT 0,
+            pages_skipped_thin INTEGER DEFAULT 0,
             started_at TEXT,
             finished_at TEXT,
             error TEXT
         );
     """)
 
+    # Migrations for existing databases
+    _migrate(cursor)
+
     conn.commit()
     conn.close()
+
+
+def _migrate(cursor):
+    """Add columns that may not exist in older databases."""
+    existing = set()
+    for table in ["projects", "pages", "crawl_jobs"]:
+        for row in cursor.execute(f"PRAGMA table_info({table})"):
+            existing.add(f"{table}.{row[1]}")
+
+    migrations = [
+        ("projects", "lang_filter", "TEXT"),
+        ("projects", "threshold_off_topic", "REAL DEFAULT 0.5"),
+        ("projects", "threshold_on_topic", "REAL DEFAULT 0.7"),
+        ("pages", "path", "TEXT NOT NULL DEFAULT '/'"),
+        ("pages", "lang", "TEXT"),
+        ("pages", "page_type", "TEXT DEFAULT 'content'"),
+        ("crawl_jobs", "pages_skipped_lang", "INTEGER DEFAULT 0"),
+        ("crawl_jobs", "pages_skipped_thin", "INTEGER DEFAULT 0"),
+    ]
+
+    for table, col, col_type in migrations:
+        if f"{table}.{col}" not in existing:
+            try:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass

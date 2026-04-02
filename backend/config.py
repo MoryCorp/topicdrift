@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     gsc_client_id: str = ""
     gsc_client_secret: str = ""
     gsc_redirect_uri: str = "http://localhost:8000/api/gsc/callback"
-    max_crawl_pages: int = 300
+    max_crawl_pages: int = 500
     max_crawl_depth: int = 3
     crawl_delay: float = 0.5
     database_path: str = str(Path(__file__).parent / "data" / "app.db")

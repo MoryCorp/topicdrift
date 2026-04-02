@@ -28,24 +28,52 @@ REMOVE_SELECTORS = [
     "#sidebar", "#menu",
 ]
 
+LANG_PREFIXES = ["/en/", "/es/", "/de/", "/it/", "/pt/", "/nl/", "/ja/", "/zh/", "/fr/", "/ko/", "/ru/", "/ar/"]
+
+STRUCTURAL_URL_PATTERNS = [
+    "/legal", "/privacy", "/mentions-legales", "/politique-confidentialite",
+    "/cgv", "/cgu", "/contact", "/equipe", "/team", "/hiring",
+    "/recrutement", "/careers", "/plan-du-site", "/sitemap",
+    "/terms", "/conditions", "/about", "/a-propos", "/impressum",
+]
+
+STRUCTURAL_TITLE_PATTERNS = [
+    "mentions légales", "privacy", "politique de confidentialité",
+    "cgv", "cgu", "legal notice", "hiring", "recrutement", "careers",
+    "terms of service", "terms and conditions", "impressum",
+]
+
+BLOG_URL_PATTERNS = ["/blog/", "/article/", "/actualites/", "/news/", "/articles/", "/posts/"]
+
 
 def normalize_url(url: str) -> str:
     parsed = urlparse(url)
     path = parsed.path.rstrip("/") or "/"
-    normalized = urlunparse((
+    # Strip UTM and tracking params
+    clean_query = ""
+    if parsed.query:
+        params = [p for p in parsed.query.split("&")
+                  if not p.lower().startswith(("utm_", "fbclid", "gclid", "mc_", "ref="))]
+        clean_query = "&".join(params)
+    return urlunparse((
         parsed.scheme,
         parsed.netloc.lower(),
         path.lower(),
-        "",  # params
-        "",  # query (strip tracking params)
-        "",  # fragment
+        "",
+        clean_query,
+        "",
     ))
-    return normalized
+
+
+def get_path(url: str) -> str:
+    return urlparse(url).path or "/"
 
 
 def should_skip_url(url: str, domain: str) -> bool:
     parsed = urlparse(url)
-    if parsed.netloc.lower().replace("www.", "") != domain.lower().replace("www.", ""):
+    host = parsed.netloc.lower().replace("www.", "")
+    target = domain.lower().replace("www.", "")
+    if host != target:
         return True
     ext = re.search(r"\.\w+$", parsed.path)
     if ext and ext.group().lower() in IGNORED_EXTENSIONS:
@@ -56,8 +84,40 @@ def should_skip_url(url: str, domain: str) -> bool:
     return False
 
 
+def should_skip_url_lang(url: str, lang_filter: str | None) -> bool:
+    """Pre-filter URLs by language prefix."""
+    if not lang_filter:
+        return False
+    path = urlparse(url).path.lower()
+    target_prefix = f"/{lang_filter}/"
+    for prefix in LANG_PREFIXES:
+        if path.startswith(prefix):
+            return prefix != target_prefix
+    return False
+
+
+def detect_page_type(url: str, title: str | None) -> str:
+    path = urlparse(url).path.lower()
+    title_lower = (title or "").lower()
+
+    for pattern in STRUCTURAL_URL_PATTERNS:
+        if pattern in path:
+            return "structural"
+    for pattern in STRUCTURAL_TITLE_PATTERNS:
+        if pattern in title_lower:
+            return "structural"
+    for pattern in BLOG_URL_PATTERNS:
+        if pattern in path:
+            return "blog"
+    return "content"
+
+
 def extract_content(html: str) -> dict:
     soup = BeautifulSoup(html, "lxml")
+
+    # Language
+    html_tag = soup.find("html")
+    lang = html_tag.get("lang", "").strip() if html_tag else ""
 
     title = ""
     if soup.title and soup.title.string:
@@ -106,6 +166,7 @@ def extract_content(html: str) -> dict:
         "meta_description": meta_desc,
         "content_text": content_text,
         "word_count": word_count,
+        "lang": lang,
         "links": links,
     }
 
@@ -120,11 +181,17 @@ def parse_sitemap(text: str, domain: str) -> Set[str]:
     return urls
 
 
-async def crawl_site(project_id: int, domain: str, max_pages: int, max_depth: int, delay: float):
+async def crawl_site(
+    project_id: int,
+    domain: str,
+    max_pages: int,
+    max_depth: int,
+    delay: float,
+    lang_filter: str | None = None,
+):
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Get or create crawl job
     cursor.execute(
         "INSERT INTO crawl_jobs (project_id, status, started_at) VALUES (?, 'running', datetime('now'))",
         (project_id,)
@@ -141,9 +208,10 @@ async def crawl_site(project_id: int, domain: str, max_pages: int, max_depth: in
 
     base_url = f"https://{domain}"
     visited: Set[str] = set()
-    queue: list[tuple[str, int]] = []  # (url, depth)
+    queue: list[tuple[str, int]] = []
+    skipped_lang = 0
+    skipped_thin = 0
 
-    # Seed with homepage
     homepage = normalize_url(base_url + "/")
     queue.append((homepage, 0))
 
@@ -159,12 +227,11 @@ async def crawl_site(project_id: int, domain: str, max_pages: int, max_depth: in
                         text = await resp.text()
                         sitemap_urls = parse_sitemap(text, domain)
                         for url in sitemap_urls:
-                            if url not in visited:
+                            if url not in visited and not should_skip_url_lang(url, lang_filter):
                                 queue.append((url, 1))
             except Exception:
                 pass
 
-            # Update pages_found
             cursor.execute("UPDATE crawl_jobs SET pages_found=? WHERE id=?", (len(queue), job_id))
             conn.commit()
 
@@ -175,6 +242,10 @@ async def crawl_site(project_id: int, domain: str, max_pages: int, max_depth: in
                     continue
                 if depth > max_depth:
                     continue
+                if should_skip_url_lang(url, lang_filter):
+                    skipped_lang += 1
+                    visited.add(url)
+                    continue
 
                 visited.add(url)
 
@@ -182,11 +253,6 @@ async def crawl_site(project_id: int, domain: str, max_pages: int, max_depth: in
                     async with session.get(url, allow_redirects=True) as resp:
                         status_code = resp.status
                         if status_code != 200:
-                            cursor.execute(
-                                "INSERT OR IGNORE INTO pages (project_id, url, status_code) VALUES (?, ?, ?)",
-                                (project_id, url, status_code)
-                            )
-                            conn.commit()
                             continue
 
                         content_type = resp.headers.get("Content-Type", "")
@@ -201,17 +267,52 @@ async def crawl_site(project_id: int, domain: str, max_pages: int, max_depth: in
 
                 data = extract_content(html)
 
-                # Store page
-                if data["word_count"] >= 50:
+                # Post-filter by lang attribute
+                if lang_filter and data["lang"]:
+                    page_lang = data["lang"][:2].lower()
+                    if page_lang != lang_filter[:2].lower():
+                        skipped_lang += 1
+                        cursor.execute(
+                            "UPDATE crawl_jobs SET pages_skipped_lang=? WHERE id=?",
+                            (skipped_lang, job_id)
+                        )
+                        conn.commit()
+                        # Still discover links
+                        for link in data["links"]:
+                            abs_url = normalize_url(urljoin(url, link))
+                            if abs_url not in visited and not should_skip_url(abs_url, domain):
+                                queue.append((abs_url, depth + 1))
+                        await asyncio.sleep(delay)
+                        continue
+
+                # Thin content check
+                if data["word_count"] < 50:
+                    skipped_thin += 1
                     cursor.execute(
-                        """INSERT OR REPLACE INTO pages
-                        (project_id, url, title, h1, meta_description, content_text, word_count, status_code, crawled_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                        (project_id, url, data["title"], data["h1"],
-                         data["meta_description"], data["content_text"],
-                         data["word_count"], status_code)
+                        "UPDATE crawl_jobs SET pages_skipped_thin=? WHERE id=?",
+                        (skipped_thin, job_id)
                     )
                     conn.commit()
+                    for link in data["links"]:
+                        abs_url = normalize_url(urljoin(url, link))
+                        if abs_url not in visited and not should_skip_url(abs_url, domain):
+                            queue.append((abs_url, depth + 1))
+                    await asyncio.sleep(delay)
+                    continue
+
+                page_type = detect_page_type(url, data["title"])
+                path = get_path(url)
+
+                cursor.execute(
+                    """INSERT OR REPLACE INTO pages
+                    (project_id, url, path, title, h1, meta_description, content_text,
+                     word_count, lang, page_type, status_code, crawled_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    (project_id, url, path, data["title"], data["h1"],
+                     data["meta_description"], data["content_text"],
+                     data["word_count"], data["lang"], page_type, status_code)
+                )
+                conn.commit()
 
                 # Discover new links
                 for link in data["links"]:
@@ -219,18 +320,16 @@ async def crawl_site(project_id: int, domain: str, max_pages: int, max_depth: in
                     if abs_url not in visited and not should_skip_url(abs_url, domain):
                         queue.append((abs_url, depth + 1))
 
-                # Update crawl job progress
-                pages_crawled = len(visited)
+                pages_crawled = len(visited) - skipped_lang - skipped_thin
                 pages_found = max(len(visited) + len(queue), pages_crawled)
                 cursor.execute(
-                    "UPDATE crawl_jobs SET pages_found=?, pages_crawled=? WHERE id=?",
-                    (pages_found, pages_crawled, job_id)
+                    "UPDATE crawl_jobs SET pages_found=?, pages_crawled=?, pages_skipped_lang=?, pages_skipped_thin=? WHERE id=?",
+                    (pages_found, pages_crawled, skipped_lang, skipped_thin, job_id)
                 )
                 conn.commit()
 
                 await asyncio.sleep(delay)
 
-        # Done
         cursor.execute(
             "UPDATE crawl_jobs SET status='done', finished_at=datetime('now') WHERE id=?",
             (job_id,)

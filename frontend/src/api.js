@@ -17,7 +17,11 @@ export const api = {
   listProjects: () => request('/projects'),
   getProject: (id) => request(`/projects/${id}`),
   createProject: (data) => request('/projects', { method: 'POST', body: JSON.stringify(data) }),
+  patchProject: (id, data) => request(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteProject: (id) => request(`/projects/${id}`, { method: 'DELETE' }),
+
+  // Keyword suggestions
+  suggestKeywords: (domain) => request('/projects/suggest-keywords', { method: 'POST', body: JSON.stringify({ domain }) }),
 
   // Crawl
   startCrawl: (id) => request(`/projects/${id}/crawl`, { method: 'POST' }),
@@ -26,6 +30,7 @@ export const api = {
   // Analysis
   startAnalysis: (id) => request(`/projects/${id}/analyze`, { method: 'POST' }),
   getResults: (id) => request(`/projects/${id}/results`),
+  getPageDetail: (projectId, pageId) => request(`/projects/${projectId}/results/${pageId}`),
   getDashboard: (id) => request(`/projects/${id}/dashboard`),
 
   // GSC

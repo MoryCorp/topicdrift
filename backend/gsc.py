@@ -2,7 +2,9 @@ import json
 import csv
 import io
 import logging
+import re
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -14,6 +16,13 @@ from database import get_connection
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
+
+
+def normalize_gsc_url(url: str) -> str:
+    """Normalize a GSC URL to match crawler normalization."""
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/") or "/"
+    return f"{parsed.scheme}://{parsed.netloc.lower()}{path.lower()}"
 
 
 def get_oauth_flow() -> Flow:
@@ -95,7 +104,6 @@ def fetch_gsc_data(project_id: int, domain: str, start_date: str | None = None, 
     site_url = f"sc-domain:{domain}"
     conn = get_connection()
 
-    # Clear existing data for this project in date range
     conn.execute(
         "DELETE FROM gsc_data WHERE project_id=? AND date >= ? AND date <= ?",
         (project_id, start_date, end_date)
@@ -125,7 +133,7 @@ def fetch_gsc_data(project_id: int, domain: str, start_date: str | None = None, 
             conn.execute(
                 """INSERT INTO gsc_data (project_id, page_url, query, clicks, impressions, ctr, position, date)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (project_id, keys[0], keys[1],
+                (project_id, normalize_gsc_url(keys[0]), keys[1],
                  row.get("clicks", 0), row.get("impressions", 0),
                  row.get("ctr", 0.0), row.get("position", 0.0),
                  keys[2])
@@ -140,26 +148,91 @@ def fetch_gsc_data(project_id: int, domain: str, start_date: str | None = None, 
     conn.close()
 
 
-def upload_gsc_csv(project_id: int, file_content: str):
+def _parse_ctr(value: str) -> float:
+    """Parse CTR from various formats: '7.5%', '0.075', etc."""
+    s = str(value).strip().replace(",", ".")
+    if "%" in s:
+        try:
+            return float(s.replace("%", "")) / 100
+        except ValueError:
+            return 0.0
+    try:
+        v = float(s)
+        return v if v <= 1 else v / 100
+    except ValueError:
+        return 0.0
+
+
+def _detect_csv_format(headers: list[str]) -> str:
+    """Detect CSV format: 'pages_only' or 'pages_queries'."""
+    lower = [h.lower().strip() for h in headers]
+    has_query = any(h in lower for h in ["query", "queries", "top queries", "search query"])
+    if has_query:
+        return "pages_queries"
+    return "pages_only"
+
+
+def _find_column(headers: list[str], candidates: list[str]) -> int | None:
+    lower = [h.lower().strip() for h in headers]
+    for c in candidates:
+        if c in lower:
+            return lower.index(c)
+    return None
+
+
+def upload_gsc_csv(project_id: int, file_content: str) -> int:
+    """Parse and import a GSC CSV. Returns number of rows imported."""
     conn = get_connection()
-    reader = csv.DictReader(io.StringIO(file_content))
 
+    # Clear existing data for this project
+    conn.execute("DELETE FROM gsc_data WHERE project_id=?", (project_id,))
+    conn.commit()
+
+    reader = csv.reader(io.StringIO(file_content))
+    headers = next(reader, None)
+    if not headers:
+        conn.close()
+        return 0
+
+    fmt = _detect_csv_format(headers)
+
+    col_page = _find_column(headers, ["page", "pages", "top pages", "url"])
+    col_clicks = _find_column(headers, ["clicks", "clics"])
+    col_impressions = _find_column(headers, ["impressions"])
+    col_ctr = _find_column(headers, ["ctr"])
+    col_position = _find_column(headers, ["position", "average position", "position moyenne"])
+    col_query = _find_column(headers, ["query", "queries", "top queries", "search query"]) if fmt == "pages_queries" else None
+
+    if col_page is None:
+        conn.close()
+        return 0
+
+    count = 0
     for row in reader:
-        # Handle both standard GSC export formats
-        page_url = row.get("Top pages", row.get("Page", row.get("page", "")))
-        query = row.get("Top queries", row.get("Query", row.get("query", "")))
-        clicks = int(row.get("Clicks", row.get("clicks", 0)))
-        impressions = int(row.get("Impressions", row.get("impressions", 0)))
-        ctr = float(str(row.get("CTR", row.get("ctr", "0"))).replace("%", "")) / 100 if "%" in str(row.get("CTR", "")) else float(row.get("CTR", row.get("ctr", 0)))
-        position = float(row.get("Position", row.get("position", 0)))
-        date = row.get("Date", row.get("date", ""))
+        if len(row) <= col_page:
+            continue
+        page_url = normalize_gsc_url(row[col_page].strip())
+        if not page_url:
+            continue
 
-        if page_url:
-            conn.execute(
-                """INSERT INTO gsc_data (project_id, page_url, query, clicks, impressions, ctr, position, date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (project_id, page_url, query, clicks, impressions, ctr, position, date)
-            )
+        clicks = int(row[col_clicks]) if col_clicks is not None and col_clicks < len(row) and row[col_clicks].strip().replace(",", "").isdigit() else 0
+        impressions = int(row[col_impressions]) if col_impressions is not None and col_impressions < len(row) and row[col_impressions].strip().replace(",", "").isdigit() else 0
+        ctr = _parse_ctr(row[col_ctr]) if col_ctr is not None and col_ctr < len(row) else 0.0
+        position = 0.0
+        if col_position is not None and col_position < len(row):
+            try:
+                position = float(row[col_position].strip().replace(",", "."))
+            except ValueError:
+                pass
+        query = row[col_query].strip() if col_query is not None and col_query < len(row) else ""
+
+        conn.execute(
+            """INSERT INTO gsc_data (project_id, page_url, query, clicks, impressions, ctr, position)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (project_id, page_url, query, clicks, impressions, ctr, position)
+        )
+        count += 1
 
     conn.commit()
     conn.close()
+    return count
