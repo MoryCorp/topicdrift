@@ -3,9 +3,9 @@ FROM nginx:alpine
 RUN apk add --no-cache nodejs npm
 
 WORKDIR /build
-COPY package.json package-lock.json* ./
+COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install
-COPY . .
+COPY frontend/ .
 RUN npm run build
 
 RUN cp -r /build/dist/* /usr/share/nginx/html/ && \
