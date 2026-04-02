@@ -56,27 +56,39 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
     )
   }
 
-  const data = pages
-    .filter(p => !p.is_structural && p.centroid_similarity_norm != null)
-    .map(p => {
-      const q = getQuadrant(p.similarity_score_norm, p.centroid_similarity_norm, thresholdOff, centroidMedian)
-      return {
-        ...p,
-        _anchor: p.similarity_score_norm,
-        _centroid: p.centroid_similarity_norm,
-        _quadrant: q,
-        _color: QUADRANT_COLORS[q],
-        _size: gscAvailable ? Math.log((p.gsc_clicks || 0) + 1) + 1 : 1,
-      }
-    })
+  const filtered = pages.filter(p => !p.is_structural && p.centroid_similarity_norm != null)
+
+  // Precompute sqrt range for bubble sizing
+  const clicks = gscAvailable ? filtered.map(p => p.gsc_clicks || 0) : []
+  const sqrtMin = clicks.length ? Math.sqrt(Math.min(...clicks)) : 0
+  const sqrtMax = clicks.length ? Math.sqrt(Math.max(...clicks)) : 0
+  const sqrtSpan = sqrtMax - sqrtMin
+
+  const data = filtered.map(p => {
+    const q = getQuadrant(p.similarity_score_norm, p.centroid_similarity_norm, thresholdOff, centroidMedian)
+    let radius = 20
+    if (gscAvailable && sqrtSpan > 0) {
+      radius = 20 + ((Math.sqrt(p.gsc_clicks || 0) - sqrtMin) / sqrtSpan) * 100
+    } else if (gscAvailable) {
+      radius = 20
+    }
+    return {
+      ...p,
+      _anchor: p.similarity_score_norm,
+      _centroid: p.centroid_similarity_norm,
+      _quadrant: q,
+      _color: QUADRANT_COLORS[q],
+      _size: radius,
+    }
+  })
 
   const topRight = data.filter(d => d._quadrant === 'top_right')
   const topLeft = data.filter(d => d._quadrant === 'top_left')
   const bottomRight = data.filter(d => d._quadrant === 'bottom_right')
   const bottomLeft = data.filter(d => d._quadrant === 'bottom_left')
 
-  // min 10px, max 100px radius; uniform 14px without GSC
-  const zRange = gscAvailable ? [10, 100] : [14, 14]
+  // _size is already the target radius; pass through via identity range
+  const zRange = gscAvailable ? [20, 120] : [20, 20]
 
   return (
     <div className="bg-slate-800 rounded-xl p-6">
