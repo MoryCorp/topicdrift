@@ -75,8 +75,8 @@ export default function QuadrantChart({ pages, gscAvailable, thresholdOff, centr
   const bottomRight = data.filter(d => d._quadrant === 'bottom_right')
   const bottomLeft = data.filter(d => d._quadrant === 'bottom_left')
 
-  // min 8px, max 40px radius; uniform 12px without GSC
-  const zRange = gscAvailable ? [8, 40] : [12, 12]
+  // min 10px, max 100px radius; uniform 14px without GSC
+  const zRange = gscAvailable ? [10, 100] : [14, 14]
 
   return (
     <div className="bg-slate-800 rounded-xl p-6">
